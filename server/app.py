@@ -25,7 +25,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable
 
-from domain import InvalidPatient, Monitor, Patient, UnknownDevice
+from domain import InvalidPatient, Monitor, Patient, ReplyResult, UnknownDevice
 from local import JsonFilePatientStore, SharedPasswordAuthenticator
 from notifiers import ConsoleNotifier, TwilioNotifier, is_valid_twilio_signature
 from records import patient_to_record
@@ -37,6 +37,13 @@ HERE = Path(__file__).parent
 STATIC = HERE / "static"
 MAX_BODY_BYTES = 16 * 1024
 SESSION_COOKIE = "lifeline_session"
+LOOPBACK_ADDRESSES = {"127.0.0.1", "::1"}
+SMS_REPLIES = {
+    ReplyResult.ACKNOWLEDGED: "Thanks. You're marked as responding, so we've stopped alerting the rest of the call list.",
+    ReplyResult.AMBIGUOUS: "You're on the call list for more than one home without power. "
+                           "Reply OK and the 4-digit code from the alert you're responding to, like OK 4821.",
+    ReplyResult.NOTHING_OPEN: "No open Lifeline alert matches that reply. Reply OK and the 4-digit code from the alert.",
+}
 log = logging.getLogger("lifeline")
 
 SECURITY_HEADERS = {
@@ -156,14 +163,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def api_sms_inbound(self) -> None:
         params = dict(urllib.parse.parse_qsl(self._body().decode(errors="replace")))
-        if self.twilio_auth_token and not is_valid_twilio_signature(
-                self.twilio_auth_token, self.public_url + self.path, params,
-                self.headers.get("X-Twilio-Signature", "")):
-            raise HttpError(HTTPStatus.FORBIDDEN, "bad signature")
-        reply = "No open Lifeline alert for this number."
-        if params.get("Body", "").strip().upper().startswith("OK"):
-            if self.lifeline.acknowledge_by_phone(params.get("From", "")):
-                reply = "Thanks. We've told everyone you're responding, so escalation has stopped."
+        if self.twilio_auth_token:
+            if not is_valid_twilio_signature(self.twilio_auth_token, self.public_url + self.path, params,
+                                             self.headers.get("X-Twilio-Signature", "")):
+                raise HttpError(HTTPStatus.FORBIDDEN, "bad signature")
+        elif self.client_address[0] not in LOOPBACK_ADDRESSES:
+            # Without Twilio there is no signature to check, so a forged "OK" could silence an
+            # alert. Fail closed: only simulated replies from this machine are accepted.
+            raise HttpError(HTTPStatus.FORBIDDEN, "SMS replies need Twilio signature checking")
+        outcome = self.lifeline.acknowledge_by_reply(params.get("From", ""), params.get("Body", ""))
+        reply = SMS_REPLIES[outcome.result]
         self._send(HTTPStatus.OK, f"<Response><Message>{reply}</Message></Response>".encode(), "application/xml")
 
     # ---- families -----------------------------------------------------------
@@ -188,15 +197,14 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(email, str) or not isinstance(password, str):
             raise HttpError(HTTPStatus.BAD_REQUEST, "Enter your email and password.")
         email = email.strip().lower()
-        # Keyed by address + email: behind ngrok every client shares one address.
-        address = f"{self.client_address[0]}|{email}"
-        if self.throttle.is_blocked(address):
+        address = self.client_address[0]
+        if self.throttle.is_blocked(address, email):
             raise HttpError(HTTPStatus.TOO_MANY_REQUESTS, "Too many attempts. Wait 15 minutes and try again.")
         member = self.authenticator.sign_in(email, password)
         if member is None:
-            self.throttle.record_failure(address)
+            self.throttle.record_failure(address, email)
             raise HttpError(HTTPStatus.UNAUTHORIZED, "That email and password don't match a staff account.")
-        self.throttle.record_success(address)
+        self.throttle.record_success(address, email)
         session_id = self.sessions.start(member)
         self._send_json(HTTPStatus.OK, {"email": member.email}, cookie=self._session_cookie(session_id))
 

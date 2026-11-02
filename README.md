@@ -132,7 +132,12 @@ python3 app.py
 ```
 
 Replies are checked against Twilio's signature, so `LIFELINE_PUBLIC_URL` must be the exact
-public base URL. If VOXO's sandbox offers SMS/voice, add a `VoxoNotifier` with the same
+public base URL.
+Each alert says "Reply OK 4821" with a code unique to that outage. A bare "OK" works when
+only one open alert went to that phone; if the person is on several call lists with open
+outages (for example the agency's on-call nurse), Lifeline asks for the code instead of
+guessing. Without Twilio configured, simulated replies are accepted only from the server
+machine itself. If VOXO's sandbox offers SMS/voice, add a `VoxoNotifier` with the same
 `send(notification)` method in `notifiers.py` and select it in `build_notifier()`.
 
 ## Settings

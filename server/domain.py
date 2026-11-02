@@ -5,6 +5,7 @@ the returned notifications themselves."""
 from __future__ import annotations
 
 import re
+import secrets
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
@@ -89,6 +90,7 @@ class Outage:
     started_at: datetime
     escalation_step: int
     next_escalation_at: datetime | None
+    reply_code: str  # in every alert, so "OK <code>" names exactly this outage
     acknowledged_by: str | None = None
 
     def is_escalating(self) -> bool:
@@ -109,16 +111,36 @@ class UnknownDevice(Exception):
     pass
 
 
+class ReplyResult(Enum):
+    ACKNOWLEDGED = "acknowledged"
+    AMBIGUOUS = "ambiguous"      # phone is on several open outages and gave no code
+    NOTHING_OPEN = "nothing_open"
+
+
+@dataclass(frozen=True)
+class ReplyOutcome:
+    result: ReplyResult
+    device_id: str | None = None
+
+
+REPLY_PATTERN = re.compile(r"^\s*OK\W*(\d{4})?\b", re.IGNORECASE)  # "OK", "ok 4821", "OK4821"; not "okay"
+
+
+def random_reply_code() -> str:
+    return f"{secrets.randbelow(10_000):04d}"
+
+
 class Monitor:
     """Live state of every unit. `status_link` turns a patient into the URL their
     family can open; the URL format is the caller's business, not this module's."""
 
     def __init__(self, patients: list[Patient], escalate_after: timedelta, offline_after: timedelta,
-                 status_link: Callable[[Patient], str]):
+                 status_link: Callable[[Patient], str], new_reply_code: Callable[[], str] = random_reply_code):
         self._units: dict[str, Unit] = {}
         self._escalate_after = escalate_after
         self._offline_after = offline_after
         self._status_link = status_link
+        self._new_reply_code = new_reply_code
         for patient in patients:
             self.upsert_patient(patient)
 
@@ -168,12 +190,25 @@ class Monitor:
         outage.next_escalation_at = None
         return True
 
-    def acknowledge_by_phone(self, phone: str) -> str | None:
-        """Ack the active outage this phone was alerted about. Returns the device id."""
-        for unit in self._units.values():
-            if unit.outage and phone in unit.notified_phones and self.acknowledge(unit.patient.device_id, phone):
-                return unit.patient.device_id
-        return None
+    def acknowledge_by_reply(self, phone: str, text: str) -> ReplyOutcome:
+        """Handle an SMS reply. "OK 4821" acknowledges the outage with that code, if this
+        phone was alerted about it. A bare "OK" works only when exactly one open outage
+        alerted this phone; with several, guessing could stop the wrong patient's alerts."""
+        match = REPLY_PATTERN.match(text)
+        if not match:
+            return ReplyOutcome(ReplyResult.NOTHING_OPEN)
+        code = match.group(1)
+        open_for_phone = [u for u in self._units.values()
+                          if u.outage and u.outage.acknowledged_by is None and phone in u.notified_phones]
+        if code is not None:
+            open_for_phone = [u for u in open_for_phone if u.outage.reply_code == code]
+        if not open_for_phone:
+            return ReplyOutcome(ReplyResult.NOTHING_OPEN)
+        if len(open_for_phone) > 1:
+            return ReplyOutcome(ReplyResult.AMBIGUOUS)
+        device_id = open_for_phone[0].patient.device_id
+        self.acknowledge(device_id, phone)
+        return ReplyOutcome(ReplyResult.ACKNOWLEDGED, device_id)
 
     def tick(self, now: datetime) -> list[Notification]:
         notifications = []
@@ -209,7 +244,8 @@ class Monitor:
         return unit
 
     def _start_outage(self, unit: Unit, now: datetime) -> list[Notification]:
-        unit.outage = Outage(started_at=now, escalation_step=0, next_escalation_at=now + self._escalate_after)
+        unit.outage = Outage(started_at=now, escalation_step=0, next_escalation_at=now + self._escalate_after,
+                             reply_code=self._unused_reply_code())
         unit.notified_phones = set()
         return [self._alert(unit, unit.patient.contacts[0], unit.outage, now)]
 
@@ -226,9 +262,16 @@ class Monitor:
         p = unit.patient
         left = self._backup_left(p, outage, now)
         message = (f"Lifeline alert: Power is out at {p.name}'s home, {p.address}. "
-                   f"{p.equipment} backup about {left} min. Reply OK if you're responding. "
+                   f"{p.equipment} backup about {left} min. Reply OK {outage.reply_code} if you're responding. "
                    f"Live status: {self._status_link(p)}")
         return Notification(contact, message)
+
+    def _unused_reply_code(self) -> str:
+        """Codes must be unique among open outages or "OK <code>" would be ambiguous again."""
+        in_use = {u.outage.reply_code for u in self._units.values() if u.outage}
+        while (code := self._new_reply_code()) in in_use:
+            pass
+        return code
 
     @staticmethod
     def _backup_left(patient: Patient, outage: Outage, now: datetime) -> int:

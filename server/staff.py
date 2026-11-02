@@ -55,28 +55,51 @@ class Sessions:
 
 
 class LoginThrottle:
-    """Slows password guessing: after MAX_FAILURES failed sign-ins from one address
-    within WINDOW, further attempts from it are refused until the window passes."""
+    """Slows password guessing on two keys at once:
+    - one account from one address: MAX_PER_ACCOUNT failures per WINDOW
+    - one address across all accounts: MAX_PER_ADDRESS failures per WINDOW,
+      so rotating email addresses (or, in shared-password mode, where the email
+      is not part of the secret) does not reset the count."""
 
-    MAX_FAILURES = 10
+    MAX_PER_ACCOUNT = 10
+    MAX_PER_ADDRESS = 30
     WINDOW = timedelta(minutes=15)
+    MAX_TRACKED_KEYS = 10_000  # bounds memory under a flood of distinct keys
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._failures: dict[str, list[datetime]] = {}
 
-    def is_blocked(self, address: str) -> bool:
+    def is_blocked(self, address: str, email: str) -> bool:
         with self._lock:
-            return len(self._recent(address)) >= self.MAX_FAILURES
+            return (len(self._recent(self._account_key(address, email))) >= self.MAX_PER_ACCOUNT
+                    or len(self._recent(address)) >= self.MAX_PER_ADDRESS)
 
-    def record_failure(self, address: str) -> None:
+    def record_failure(self, address: str, email: str) -> None:
+        now = datetime.now(timezone.utc)
         with self._lock:
-            self._failures[address] = self._recent(address) + [datetime.now(timezone.utc)]
+            if len(self._failures) >= self.MAX_TRACKED_KEYS:
+                self._forget_expired()
+            for key in (address, self._account_key(address, email)):
+                self._failures[key] = self._recent(key) + [now]
 
-    def record_success(self, address: str) -> None:
+    def record_success(self, address: str, email: str) -> None:
+        # Only the account key resets; a success must not wipe an address's guessing history.
         with self._lock:
-            self._failures.pop(address, None)
+            self._failures.pop(self._account_key(address, email), None)
 
-    def _recent(self, address: str) -> list[datetime]:
+    @staticmethod
+    def _account_key(address: str, email: str) -> str:
+        return f"{address}|{email}"
+
+    def _recent(self, key: str) -> list[datetime]:
         cutoff = datetime.now(timezone.utc) - self.WINDOW
-        return [t for t in self._failures.get(address, []) if t > cutoff]
+        return [t for t in self._failures.get(key, []) if t > cutoff]
+
+    def _forget_expired(self) -> None:
+        for key in [k for k in self._failures if not self._recent(k)]:
+            del self._failures[key]
+        if len(self._failures) >= self.MAX_TRACKED_KEYS:  # still full: drop the stalest half
+            stalest = sorted(self._failures, key=lambda k: self._failures[k][-1])
+            for key in stalest[: len(stalest) // 2]:
+                del self._failures[key]

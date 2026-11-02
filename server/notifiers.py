@@ -17,7 +17,14 @@ from domain import Channel, Notification
 log = logging.getLogger("lifeline.notify")
 
 
+def masked(phone: str) -> str:
+    return f"***{phone[-4:]}"
+
+
 class ConsoleNotifier:
+    """Development stand-in for SMS: the log line IS the delivered message, so it
+    deliberately includes the full text and family link. Never use it in production."""
+
     def send(self, notification: Notification) -> None:
         c = notification.contact
         log.info("[%s -> %s %s (%s)] %s", c.channel.value.upper(), c.role, c.name, c.phone, notification.message)
@@ -51,11 +58,11 @@ class TwilioNotifier:
         )
         try:
             with urllib.request.urlopen(request, timeout=10) as response:
-                log.info("twilio %s to %s: HTTP %s", resource, fields["To"], response.status)
+                log.info("twilio %s to %s: HTTP %s", resource, masked(fields["To"]), response.status)
         except urllib.error.HTTPError as error:
-            log.error("twilio %s to %s failed: HTTP %s %s", resource, fields["To"], error.code, error.read()[:300])
+            log.error("twilio %s to %s failed: HTTP %s %s", resource, masked(fields["To"]), error.code, error.read()[:300])
         except urllib.error.URLError as error:
-            log.error("twilio %s to %s failed: %s", resource, fields["To"], error.reason)
+            log.error("twilio %s to %s failed: %s", resource, masked(fields["To"]), error.reason)
 
 
 def is_valid_twilio_signature(auth_token: str, url: str, params: dict[str, str], signature: str) -> bool:

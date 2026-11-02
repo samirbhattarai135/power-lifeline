@@ -13,7 +13,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
-from domain import InvalidPatient, Monitor, Notification, Patient, UnknownDevice
+from domain import InvalidPatient, Monitor, Notification, Patient, ReplyOutcome, UnknownDevice
 from records import patient_from_form
 
 log = logging.getLogger("lifeline.service")
@@ -75,9 +75,9 @@ class Lifeline:
         with self._lock:
             return self._monitor.acknowledge(device_id, by)
 
-    def acknowledge_by_phone(self, phone: str) -> str | None:
+    def acknowledge_by_reply(self, phone: str, text: str) -> ReplyOutcome:
         with self._lock:
-            return self._monitor.acknowledge_by_phone(phone)
+            return self._monitor.acknowledge_by_reply(phone, text)
 
     # ---- family status page -------------------------------------------------
 

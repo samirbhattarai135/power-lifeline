@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from domain import Channel, Contact, InvalidPatient, Monitor, Patient, UnknownDevice
+from domain import Channel, Contact, InvalidPatient, Monitor, Patient, ReplyResult, UnknownDevice
 from local import JsonFilePatientStore, SharedPasswordAuthenticator
 from notifiers import is_valid_twilio_signature
 from records import patient_from_form, patient_from_record, patient_to_record
@@ -42,9 +42,11 @@ def a_form(**overrides) -> dict:
     return record
 
 
-def make_monitor(*patients: Patient) -> Monitor:
+def make_monitor(*patients: Patient, codes=None) -> Monitor:
+    codes = iter(codes or ["1111", "2222", "3333"])
     return Monitor(list(patients or [a_patient()]), escalate_after=ESCALATE,
-                   offline_after=timedelta(seconds=90), status_link=lambda p: f"https://x/s/{p.share_token}")
+                   offline_after=timedelta(seconds=90), status_link=lambda p: f"https://x/s/{p.share_token}",
+                   new_reply_code=lambda: next(codes))
 
 
 class OutageFlow(unittest.TestCase):
@@ -55,6 +57,7 @@ class OutageFlow(unittest.TestCase):
         self.assertEqual([n.contact.name for n in first], ["Daughter"])
         self.assertIn("60 min", first[0].message)
         self.assertIn("https://x/s/" + "s" * 20, first[0].message)
+        self.assertIn("Reply OK 1111", first[0].message)
         self.assertEqual(m.report("unit-01", False, 89, T0 + timedelta(seconds=30)), [])
 
     def test_escalates_until_list_exhausted(self):
@@ -69,10 +72,27 @@ class OutageFlow(unittest.TestCase):
     def test_sms_ack_stops_escalation(self):
         m = make_monitor()
         m.report("unit-01", False, 90, T0)
-        self.assertIsNone(m.acknowledge_by_phone("+19995550000"))
-        self.assertEqual(m.acknowledge_by_phone("+16015550101"), "unit-01")
+        self.assertEqual(m.acknowledge_by_reply("+19995550000", "OK").result, ReplyResult.NOTHING_OPEN)
+        self.assertEqual(m.acknowledge_by_reply("+16015550101", "okay").result, ReplyResult.NOTHING_OPEN)
+        outcome = m.acknowledge_by_reply("+16015550101", "ok")
+        self.assertEqual((outcome.result, outcome.device_id), (ReplyResult.ACKNOWLEDGED, "unit-01"))
         self.assertEqual(m.tick(T0 + ESCALATE), [])
         self.assertEqual(m.status("unit-01", T0)["acknowledged_by"], "+16015550101")
+
+    def test_shared_contact_must_name_the_outage(self):
+        nurse = Contact("agency", "Nurse", "+16015550102", Channel.CALL)
+        ruth = a_patient(contacts=(nurse,))
+        james = a_patient(device_id="unit-02", share_token="j" * 20, name="James", contacts=(nurse,))
+        m = make_monitor(ruth, james, codes=["1111", "1111", "2222"])  # duplicate code is re-drawn
+        m.report("unit-01", False, 90, T0)
+        m.report("unit-02", False, 90, T0)
+        self.assertEqual(m.acknowledge_by_reply(nurse.phone, "OK").result, ReplyResult.AMBIGUOUS)
+        self.assertIsNone(m.status("unit-01", T0)["acknowledged_by"])
+        outcome = m.acknowledge_by_reply(nurse.phone, "OK 2222")
+        self.assertEqual((outcome.result, outcome.device_id), (ReplyResult.ACKNOWLEDGED, "unit-02"))
+        self.assertIsNone(m.status("unit-01", T0)["acknowledged_by"])
+        # Now only Ruth is open for this phone, so a bare OK is unambiguous again.
+        self.assertEqual(m.acknowledge_by_reply(nurse.phone, "ok").device_id, "unit-01")
 
     def test_restore_notifies_only_alerted_contacts(self):
         m = make_monitor()
@@ -209,12 +229,28 @@ class StaffSessions(unittest.TestCase):
         self.assertIsNone(sessions.member(sid))
         self.assertIsNone(sessions.member(None))
 
-    def test_throttle(self):
+    def test_throttle_per_account(self):
         throttle = LoginThrottle()
-        for _ in range(LoginThrottle.MAX_FAILURES):
-            throttle.record_failure("1.2.3.4")
-        self.assertTrue(throttle.is_blocked("1.2.3.4"))
-        self.assertFalse(throttle.is_blocked("5.6.7.8"))
+        for _ in range(LoginThrottle.MAX_PER_ACCOUNT):
+            throttle.record_failure("1.2.3.4", "nurse@agency.org")
+        self.assertTrue(throttle.is_blocked("1.2.3.4", "nurse@agency.org"))
+        self.assertFalse(throttle.is_blocked("1.2.3.4", "other@agency.org"))
+        self.assertFalse(throttle.is_blocked("5.6.7.8", "nurse@agency.org"))
+
+    def test_rotating_emails_still_blocks_the_address(self):
+        throttle = LoginThrottle()
+        for n in range(LoginThrottle.MAX_PER_ADDRESS):
+            throttle.record_failure("1.2.3.4", f"guess{n}@x.org")
+        self.assertTrue(throttle.is_blocked("1.2.3.4", "fresh@x.org"))
+        throttle.record_success("1.2.3.4", "guess0@x.org")  # one success must not clear the address
+        self.assertTrue(throttle.is_blocked("1.2.3.4", "fresh@x.org"))
+
+    def test_throttle_memory_is_bounded(self):
+        throttle = LoginThrottle()
+        throttle.MAX_TRACKED_KEYS = 50
+        for n in range(200):
+            throttle.record_failure(f"10.0.0.{n}", "a@b.org")
+        self.assertLessEqual(len(throttle._failures), 52)
 
 
 class Webhooks(unittest.TestCase):
