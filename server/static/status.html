@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex">
+<title>Lifeline: power status</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;700;800&display=swap">
+<link rel="stylesheet" href="/static/app.css">
+<script type="module" src="/static/status.js"></script>
+</head>
+<body>
+<main class="family">
+  <div class="family-brand">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12h4l2-5 4 10 2-5h8"/></svg>
+    Lifeline
+  </div>
+  <p class="visually-hidden" id="announce" aria-live="polite"></p>
+  <p id="loading" class="muted">Checking the power at home…</p>
+  <section id="status" hidden></section>
+  <footer class="family-foot">
+    <p>If someone's breathing is in danger, <strong>call 911 now</strong>. Don't wait for this page.</p>
+    <p id="updated"></p>
+  </footer>
+</main>
+</body>
+</html>

@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lifeline</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;700;800&family=Atkinson+Hyperlegible+Mono:wght@400&display=swap">
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="anonymous">
+<link rel="stylesheet" href="/static/app.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="anonymous"></script>
+<script type="module" src="/static/platform.js"></script>
+</head>
+<body>
+<header class="topbar">
+  <div class="wordmark">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12h4l2-5 4 10 2-5h8"/></svg>
+    Lifeline
+  </div>
+  <nav class="views" aria-label="Views">
+    <a href="#board" data-view="board">Live board</a>
+    <a href="#patients" data-view="patients">Patients</a>
+  </nav>
+  <div class="who">
+    <span id="who"></span>
+    <button class="btn btn-quiet btn-small" id="signout" type="button">Sign out</button>
+  </div>
+</header>
+
+<main>
+  <section class="board" id="view-board" aria-label="Live board">
+    <div class="triage">
+      <div class="headline" id="headline"><h1>Loading…</h1></div>
+      <p class="visually-hidden" id="announce" aria-live="polite"></p>
+      <div id="units"></div>
+    </div>
+    <div id="map" role="region" aria-label="Map of patient homes"></div>
+  </section>
+
+  <section class="roster" id="view-patients" aria-label="Patients" hidden>
+    <div class="roster-head">
+      <div>
+        <h1>Patients</h1>
+        <p class="muted">Each patient has one power unit at their outlet and a call list we alert in order.</p>
+      </div>
+      <button class="btn" id="add-patient" type="button">Add patient</button>
+    </div>
+    <div id="roster-body"></div>
+  </section>
+</main>
+
+<dialog class="panel" id="panel" aria-labelledby="panel-title">
+  <div class="panel-head">
+    <h2 id="panel-title">Add patient</h2>
+    <button class="btn btn-quiet btn-small" type="button" data-close>Close</button>
+  </div>
+  <div id="panel-content"></div>
+</dialog>
+</body>
+</html>

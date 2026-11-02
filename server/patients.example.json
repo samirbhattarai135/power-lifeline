@@ -1,0 +1,86 @@
+[
+  {
+    "device_id": "unit-01",
+    "device_token": "change-me-unit-01",
+    "name": "Ruth M. (synthetic)",
+    "address": "118 Pine St, Hattiesburg, MS",
+    "lat": 31.3271,
+    "lon": -89.2903,
+    "equipment": "Oxygen concentrator",
+    "backup_minutes": 240,
+    "acuity": 1,
+    "contacts": [
+      {
+        "role": "caregiver",
+        "name": "Daughter",
+        "phone": "+15555550101",
+        "channel": "sms"
+      },
+      {
+        "role": "caregiver",
+        "name": "Daughter (call)",
+        "phone": "+15555550102",
+        "channel": "call"
+      },
+      {
+        "role": "agency",
+        "name": "Home health on-call nurse",
+        "phone": "+15555550103",
+        "channel": "call"
+      },
+      {
+        "role": "county",
+        "name": "County EMA duty officer",
+        "phone": "+15555550104",
+        "channel": "sms"
+      }
+    ],
+    "share_token": "demo-family-link-01-RsprNKmeVNW0"
+  },
+  {
+    "device_id": "unit-02",
+    "device_token": "change-me-unit-02",
+    "name": "James T. (synthetic)",
+    "address": "42 Oak Ridge Rd, Petal, MS",
+    "lat": 31.3466,
+    "lon": -89.26,
+    "equipment": "Home ventilator",
+    "backup_minutes": 120,
+    "acuity": 1,
+    "contacts": [
+      {
+        "role": "caregiver",
+        "name": "Spouse",
+        "phone": "+15555550201",
+        "channel": "sms"
+      },
+      {
+        "role": "agency",
+        "name": "Home health on-call nurse",
+        "phone": "+15555550103",
+        "channel": "call"
+      }
+    ],
+    "share_token": "demo-family-link-02-nYyvFjdIFKJL"
+  },
+  {
+    "device_id": "unit-03",
+    "device_token": "change-me-unit-03",
+    "name": "Linda W. (synthetic)",
+    "address": "9 Magnolia Ln, Purvis, MS",
+    "lat": 31.1435,
+    "lon": -89.4098,
+    "equipment": "Powered air mattress",
+    "backup_minutes": 480,
+    "acuity": 3,
+    "contacts": [
+      {
+        "role": "caregiver",
+        "name": "Son",
+        "phone": "+15555550301",
+        "channel": "sms"
+      }
+    ],
+    "share_token": "demo-family-link-03-dolmHPAJVJz-"
+  }
+]

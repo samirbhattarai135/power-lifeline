@@ -1,0 +1,63 @@
+/* Hallmark · scope: app UI (platform + family status + login) · tone: calm clinical
+ * theme: custom · vibe: "quiet clinic, one alarm colour" · paper oklch(97.4% 0.007 170)
+ * accent: alarm oklch(53% 0.19 27) reserved for power-out only · type: Atkinson Hyperlegible Next + Mono
+ * axes: light / humanist-sans / warm-alarm-on-cool-neutral
+ * pre-emit critique: P4 H5 E4 S5 R5 V4
+ */
+:root {
+  /* paper and ink */
+  --color-paper: oklch(97.4% 0.007 170);
+  --color-paper-raised: oklch(99.4% 0.003 170);
+  --color-paper-sunk: oklch(94.6% 0.01 175);
+  --color-ink: oklch(29% 0.03 225);
+  --color-ink-muted: oklch(50% 0.02 220);
+  --color-rule: oklch(88.5% 0.012 190);
+  --color-rule-strong: oklch(78% 0.015 200);
+
+  /* states: each colour means exactly one thing */
+  --color-out: oklch(53% 0.19 27);
+  --color-out-wash: oklch(95.5% 0.025 27);
+  --color-on: oklch(52% 0.1 160);
+  --color-on-wash: oklch(95.5% 0.025 160);
+  --color-acked: oklch(66% 0.14 70);
+  --color-acked-wash: oklch(95.5% 0.04 80);
+  --color-quiet: oklch(62% 0.01 220);
+  --color-quiet-wash: oklch(94% 0.005 220);
+  --color-focus: oklch(55% 0.17 250);
+  --color-on-ink: oklch(99% 0 0);
+  --color-shadow: oklch(29% 0.03 225 / 0.14);
+  --color-scrim: oklch(29% 0.03 225 / 0.28);
+
+  /* type */
+  --font-body: "Atkinson Hyperlegible Next", system-ui, sans-serif;
+  --font-code: "Atkinson Hyperlegible Mono", ui-monospace, monospace;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.1875rem;
+  --text-xl: 1.5rem;
+  --text-2xl: 2rem;
+  --text-display: clamp(2.25rem, 1.4rem + 3.4vw, 3.75rem);
+  --leading-tight: 1.12;
+  --leading-body: 1.5;
+
+  /* space (4 pt) */
+  --space-2xs: 0.25rem;
+  --space-xs: 0.5rem;
+  --space-sm: 0.75rem;
+  --space-md: 1rem;
+  --space-lg: 1.5rem;
+  --space-xl: 2rem;
+  --space-2xl: 3rem;
+  --space-3xl: 4.5rem;
+
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --rule-hair: 1px solid var(--color-rule);
+
+  /* motion */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in: cubic-bezier(0.55, 0, 1, 0.45);
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+  --dur-fast: 120ms;
+  --dur-base: 220ms;
+}

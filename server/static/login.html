@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lifeline: sign in</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;700;800&display=swap">
+<link rel="stylesheet" href="/static/app.css">
+<script type="module" src="/static/login.js"></script>
+</head>
+<body>
+<main class="signin">
+  <section class="signin-intro">
+    <h1>Know the moment a patient loses power.</h1>
+    <p>Lifeline watches the outlets of patients who depend on oxygen, ventilators and other powered equipment, and tells their family and your on-call staff when the power goes out.</p>
+  </section>
+  <form id="signin" novalidate>
+    <h2>Agency sign in</h2>
+    <p id="error" class="form-error" role="alert" hidden></p>
+    <div class="field">
+      <label for="email">Work email</label>
+      <input class="input" id="email" name="email" type="email" autocomplete="username" required>
+    </div>
+    <div class="field">
+      <label for="password">Password</label>
+      <input class="input" id="password" name="password" type="password" autocomplete="current-password" required>
+    </div>
+    <button class="btn" type="submit">Sign in</button>
+  </form>
+</main>
+</body>
+</html>

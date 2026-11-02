@@ -1,0 +1,433 @@
+"""HTTP delivery layer and composition root.
+
+Three audiences, three trust levels:
+  devices  -> POST /api/report               (per-unit token header)
+  families -> /s/<share-token>, /api/family/* (unguessable per-patient link)
+  staff    -> /, /api/patients, /api/status   (signed-in session cookie)
+
+Run:  python3 app.py   (see README for Supabase and Twilio settings)
+"""
+
+from __future__ import annotations
+
+import hmac
+import json
+import logging
+import mimetypes
+import os
+import re
+import threading
+import urllib.parse
+from datetime import timedelta
+from http import HTTPStatus
+from http.cookies import SimpleCookie
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from typing import Callable
+
+from domain import InvalidPatient, Monitor, Patient, UnknownDevice
+from local import JsonFilePatientStore, SharedPasswordAuthenticator
+from notifiers import ConsoleNotifier, TwilioNotifier, is_valid_twilio_signature
+from records import patient_to_record
+from service import DuplicateDevice, Lifeline, Notifier, PatientStore
+from staff import LoginThrottle, Sessions, StaffAuthenticator, StaffMember
+from supabase_backend import SupabaseAuthenticator, SupabaseClient, SupabaseError, SupabasePatientStore
+
+HERE = Path(__file__).parent
+STATIC = HERE / "static"
+MAX_BODY_BYTES = 16 * 1024
+SESSION_COOKIE = "lifeline_session"
+log = logging.getLogger("lifeline")
+
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    # Family links carry a secret in the URL path. Cross-site requests send only our origin,
+    # never the path, which keeps the secret private and still satisfies OpenStreetMap's tile policy.
+    "Referrer-Policy": "strict-origin-when-cross-origin",
+    "Content-Security-Policy": (
+        "default-src 'self'; "
+        "script-src 'self' https://unpkg.com; "
+        "style-src 'self' https://unpkg.com https://fonts.googleapis.com; "
+        "font-src https://fonts.gstatic.com; "
+        "img-src 'self' data: https://*.tile.openstreetmap.org https://unpkg.com; "
+        "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+    ),
+}
+
+
+class HttpError(Exception):
+    def __init__(self, status: HTTPStatus, message: str):
+        super().__init__(message)
+        self.status = status
+        self.message = message
+
+
+class Route:
+    def __init__(self, method: str, pattern: str, handler: Callable, staff_only: bool = False):
+        self.method = method
+        self.pattern = re.compile(f"^{pattern}$")
+        self.handler = handler
+        self.staff_only = staff_only
+
+
+class Handler(BaseHTTPRequestHandler):
+    lifeline: Lifeline
+    authenticator: StaffAuthenticator
+    sessions: Sessions
+    throttle: LoginThrottle
+    public_url: str
+    twilio_auth_token: str | None
+    routes: list[Route]
+
+    # ---- dispatch -----------------------------------------------------------
+
+    def do_GET(self) -> None:
+        self._dispatch("GET")
+
+    def do_POST(self) -> None:
+        self._dispatch("POST")
+
+    def do_PUT(self) -> None:
+        self._dispatch("PUT")
+
+    def do_DELETE(self) -> None:
+        self._dispatch("DELETE")
+
+    def _dispatch(self, method: str) -> None:
+        path = urllib.parse.urlsplit(self.path).path
+        for route in self.routes:
+            match = route.pattern.match(path)
+            if route.method != method or not match:
+                continue
+            try:
+                if route.staff_only:
+                    self._require_staff(method)
+                route.handler(self, *match.groups())
+            except HttpError as error:
+                self._send_json(error.status, {"error": error.message})
+            except InvalidPatient as error:
+                status = HTTPStatus.CONFLICT if isinstance(error, DuplicateDevice) else HTTPStatus.BAD_REQUEST
+                self._send_json(status, {"error": str(error)})
+            except UnknownDevice:
+                self._send_json(HTTPStatus.NOT_FOUND, {"error": "No patient with that unit ID"})
+            except SupabaseError as error:
+                log.error("%s", error)
+                self._send_json(HTTPStatus.BAD_GATEWAY, {"error": "The database is unreachable. Try again shortly."})
+            return
+        self._send_json(HTTPStatus.NOT_FOUND, {"error": "not found"})
+
+    # ---- pages and static assets ------------------------------------------
+
+    def page_platform(self) -> None:
+        if self._staff() is None:
+            self._redirect("/login")
+            return
+        self._send_file(STATIC / "platform.html")
+
+    def page_login(self) -> None:
+        if self._staff() is not None:
+            self._redirect("/")
+            return
+        self._send_file(STATIC / "login.html")
+
+    def page_family(self, _share_token: str) -> None:
+        self._send_file(STATIC / "status.html")
+
+    def static_asset(self, name: str) -> None:
+        path = (STATIC / name).resolve()
+        if path.parent != STATIC.resolve() or not path.is_file():
+            raise HttpError(HTTPStatus.NOT_FOUND, "not found")
+        self._send_file(path)
+
+    # ---- devices and Twilio -------------------------------------------------
+
+    def api_report(self) -> None:
+        data = self._json_body()
+        device_id, has_wall_power = data.get("device_id"), data.get("wall_power")
+        battery = data.get("battery_percent")
+        if not isinstance(device_id, str) or not isinstance(has_wall_power, bool):
+            raise HttpError(HTTPStatus.BAD_REQUEST, "expected {device_id: str, wall_power: bool, battery_percent?: int}")
+        if not isinstance(battery, int) or isinstance(battery, bool) or not 0 <= battery <= 100:
+            battery = None
+        if not hmac.compare_digest(self.headers.get("X-Device-Token", ""), self.lifeline.device_token(device_id)):
+            raise HttpError(HTTPStatus.UNAUTHORIZED, "bad device token")
+        self.lifeline.report(device_id, has_wall_power, battery)
+        self._send_json(HTTPStatus.OK, {"ok": True})
+
+    def api_sms_inbound(self) -> None:
+        params = dict(urllib.parse.parse_qsl(self._body().decode(errors="replace")))
+        if self.twilio_auth_token and not is_valid_twilio_signature(
+                self.twilio_auth_token, self.public_url + self.path, params,
+                self.headers.get("X-Twilio-Signature", "")):
+            raise HttpError(HTTPStatus.FORBIDDEN, "bad signature")
+        reply = "No open Lifeline alert for this number."
+        if params.get("Body", "").strip().upper().startswith("OK"):
+            if self.lifeline.acknowledge_by_phone(params.get("From", "")):
+                reply = "Thanks. We've told everyone you're responding, so escalation has stopped."
+        self._send(HTTPStatus.OK, f"<Response><Message>{reply}</Message></Response>".encode(), "application/xml")
+
+    # ---- families -----------------------------------------------------------
+
+    def api_family_status(self, share_token: str) -> None:
+        status = self.lifeline.family_status(share_token)
+        if status is None:
+            raise HttpError(HTTPStatus.NOT_FOUND, "This link is no longer active. Ask the care agency for a new one.")
+        self._send_json(HTTPStatus.OK, status)
+
+    def api_family_ack(self, share_token: str) -> None:
+        self._json_body()  # JSON-only, so a cross-site form post cannot trigger it
+        if self.lifeline.family_status(share_token) is None:
+            raise HttpError(HTTPStatus.NOT_FOUND, "This link is no longer active.")
+        self._send_json(HTTPStatus.OK, {"acknowledged": self.lifeline.family_acknowledge(share_token)})
+
+    # ---- staff session -----------------------------------------------------
+
+    def api_login(self) -> None:
+        data = self._json_body()
+        email, password = data.get("email"), data.get("password")
+        if not isinstance(email, str) or not isinstance(password, str):
+            raise HttpError(HTTPStatus.BAD_REQUEST, "Enter your email and password.")
+        email = email.strip().lower()
+        # Keyed by address + email: behind ngrok every client shares one address.
+        address = f"{self.client_address[0]}|{email}"
+        if self.throttle.is_blocked(address):
+            raise HttpError(HTTPStatus.TOO_MANY_REQUESTS, "Too many attempts. Wait 15 minutes and try again.")
+        member = self.authenticator.sign_in(email, password)
+        if member is None:
+            self.throttle.record_failure(address)
+            raise HttpError(HTTPStatus.UNAUTHORIZED, "That email and password don't match a staff account.")
+        self.throttle.record_success(address)
+        session_id = self.sessions.start(member)
+        self._send_json(HTTPStatus.OK, {"email": member.email}, cookie=self._session_cookie(session_id))
+
+    def api_logout(self) -> None:
+        self.sessions.end(self._session_id())
+        self._send_json(HTTPStatus.OK, {"ok": True}, cookie=self._session_cookie("", expire=True))
+
+    def api_me(self) -> None:
+        self._send_json(HTTPStatus.OK, {"email": self._staff().email})
+
+    # ---- staff: live board and roster ---------------------------------------
+
+    def api_status(self) -> None:
+        self._send_json(HTTPStatus.OK, {"units": self.lifeline.snapshot()})
+
+    def api_staff_ack(self, device_id: str) -> None:
+        by = f"{self._staff().email} (agency)"
+        self._send_json(HTTPStatus.OK, {"acknowledged": self.lifeline.acknowledge(device_id, by)})
+
+    def api_list_patients(self) -> None:
+        self._send_json(HTTPStatus.OK, {"patients": [self._staff_view(p) for p in self.lifeline.roster()]})
+
+    def api_add_patient(self) -> None:
+        self._send_json(HTTPStatus.CREATED, self._staff_view(self.lifeline.add_patient(self._json_body())))
+
+    def api_update_patient(self, device_id: str) -> None:
+        self._send_json(HTTPStatus.OK, self._staff_view(self.lifeline.update_patient(device_id, self._json_body())))
+
+    def api_rotate_link(self, device_id: str) -> None:
+        self._send_json(HTTPStatus.OK, self._staff_view(self.lifeline.rotate_share_link(device_id)))
+
+    def api_delete_patient(self, device_id: str) -> None:
+        self.lifeline.remove_patient(device_id)
+        self._send_json(HTTPStatus.OK, {"ok": True})
+
+    def _staff_view(self, patient: Patient) -> dict:
+        record = patient_to_record(patient)
+        record.pop("share_token")
+        record["status_link"] = family_link(self.public_url, patient)
+        return record
+
+    # ---- request helpers ----------------------------------------------------
+
+    def _session_id(self) -> str | None:
+        cookie = SimpleCookie(self.headers.get("Cookie", ""))
+        morsel = cookie.get(SESSION_COOKIE)
+        return morsel.value if morsel else None
+
+    def _staff(self) -> StaffMember | None:
+        return self.sessions.member(self._session_id())
+
+    def _require_staff(self, method: str) -> None:
+        if self._staff() is None:
+            raise HttpError(HTTPStatus.UNAUTHORIZED, "Sign in to continue.")
+        if method != "GET":
+            self._require_same_origin()
+
+    def _require_same_origin(self) -> None:
+        origin = self.headers.get("Origin")
+        if origin and urllib.parse.urlsplit(origin).netloc != self.headers.get("Host"):
+            raise HttpError(HTTPStatus.FORBIDDEN, "Cross-site request refused.")
+
+    def _body(self) -> bytes:
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            length = -1
+        if not 0 <= length <= MAX_BODY_BYTES:
+            raise HttpError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "Request body too large.")
+        return self.rfile.read(length)
+
+    def _json_body(self) -> dict:
+        if not self.headers.get("Content-Type", "").startswith("application/json"):
+            raise HttpError(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "Send JSON.")
+        try:
+            data = json.loads(self._body() or b"{}")
+        except ValueError:
+            raise HttpError(HTTPStatus.BAD_REQUEST, "Malformed JSON.") from None
+        if not isinstance(data, dict):
+            raise HttpError(HTTPStatus.BAD_REQUEST, "Expected a JSON object.")
+        return data
+
+    def _session_cookie(self, value: str, expire: bool = False) -> str:
+        parts = [f"{SESSION_COOKIE}={value}", "Path=/", "HttpOnly", "SameSite=Strict"]
+        parts.append("Max-Age=0" if expire else "Max-Age=43200")
+        # Secure only when this request really arrived over https (ngrok sets X-Forwarded-Proto).
+        # Keying it off LIFELINE_PUBLIC_URL would break staff on plain http://<pi-ip>:8080.
+        if self.headers.get("X-Forwarded-Proto") == "https":
+            parts.append("Secure")
+        return "; ".join(parts)
+
+    # ---- response helpers ---------------------------------------------------
+
+    def _redirect(self, location: str) -> None:
+        self.send_response(HTTPStatus.SEE_OTHER)
+        self.send_header("Location", location)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _send_file(self, path: Path) -> None:
+        content_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+        if content_type.startswith("text/") or content_type == "application/javascript":
+            content_type += "; charset=utf-8"
+        self._send(HTTPStatus.OK, path.read_bytes(), content_type)
+
+    def _send_json(self, status: HTTPStatus, payload: dict, cookie: str | None = None) -> None:
+        self._send(status, json.dumps(payload).encode(), "application/json", cookie)
+
+    def _send(self, status: HTTPStatus, body: bytes, content_type: str, cookie: str | None = None) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        for name, value in SECURITY_HEADERS.items():
+            self.send_header(name, value)
+        if cookie:
+            self.send_header("Set-Cookie", cookie)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, fmt: str, *args) -> None:
+        # Request lines contain family-link tokens; keep them out of logs.
+        log.debug("%s %s", self.address_string(), re.sub(r"/(s|api/family)/[^/ ]+", r"/\1/<link>", fmt % args))
+
+
+Handler.routes = [
+    Route("GET", r"/", Handler.page_platform),
+    Route("GET", r"/login", Handler.page_login),
+    Route("GET", r"/s/([A-Za-z0-9_-]{16,})", Handler.page_family),
+    Route("GET", r"/static/([A-Za-z0-9_.-]+)", Handler.static_asset),
+    Route("POST", r"/api/report", Handler.api_report),
+    Route("POST", r"/api/sms-inbound", Handler.api_sms_inbound),
+    Route("GET", r"/api/family/([A-Za-z0-9_-]{16,})", Handler.api_family_status),
+    Route("POST", r"/api/family/([A-Za-z0-9_-]{16,})/ack", Handler.api_family_ack),
+    Route("POST", r"/api/login", Handler.api_login),
+    Route("POST", r"/api/logout", Handler.api_logout),
+    Route("GET", r"/api/me", Handler.api_me, staff_only=True),
+    Route("GET", r"/api/status", Handler.api_status, staff_only=True),
+    Route("POST", r"/api/ack/([a-z0-9-]+)", Handler.api_staff_ack, staff_only=True),
+    Route("GET", r"/api/patients", Handler.api_list_patients, staff_only=True),
+    Route("POST", r"/api/patients", Handler.api_add_patient, staff_only=True),
+    Route("PUT", r"/api/patients/([a-z0-9-]+)", Handler.api_update_patient, staff_only=True),
+    Route("POST", r"/api/patients/([a-z0-9-]+)/rotate-link", Handler.api_rotate_link, staff_only=True),
+    Route("DELETE", r"/api/patients/([a-z0-9-]+)", Handler.api_delete_patient, staff_only=True),
+]
+
+
+def family_link(public_url: str, patient: Patient) -> str:
+    return f"{public_url}/s/{patient.share_token}"
+
+
+# ---- composition root ---------------------------------------------------------
+
+def build_backend() -> tuple[PatientStore, StaffAuthenticator, str]:
+    url, key = os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_SECRET_KEY")
+    if url and key:
+        client = SupabaseClient(url, key)
+        return SupabasePatientStore(client), SupabaseAuthenticator(client), "Supabase"
+    password = os.environ.get("LIFELINE_ADMIN_PASSWORD")
+    if not password:
+        raise SystemExit("Set SUPABASE_URL + SUPABASE_SECRET_KEY, or LIFELINE_ADMIN_PASSWORD for local mode.")
+    patients_file = Path(os.environ.get("LIFELINE_PATIENTS", HERE / "patients.json"))
+    return JsonFilePatientStore(patients_file), SharedPasswordAuthenticator(password), f"local file {patients_file.name}"
+
+
+def build_notifier() -> Notifier:
+    kind = os.environ.get("LIFELINE_NOTIFIER", "console")
+    if kind == "console":
+        return ConsoleNotifier()
+    if kind == "twilio":
+        return TwilioNotifier(os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"], os.environ["TWILIO_FROM"])
+    raise SystemExit(f"LIFELINE_NOTIFIER must be 'console' or 'twilio', got {kind!r}")
+
+
+def load_dotenv(path: Path) -> None:
+    """Minimal .env reader so secrets stay out of shell history. Real env vars win."""
+    if not path.exists():
+        return
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            key, value = line.split("=", 1)
+            os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
+
+
+def run_ticker(lifeline: Lifeline, stop: threading.Event) -> None:
+    while not stop.wait(1.0):
+        try:
+            lifeline.tick()
+        except Exception:
+            log.exception("escalation tick failed")
+
+
+def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    load_dotenv(HERE / ".env")
+    port = int(os.environ.get("PORT", "8080"))
+    public_url = os.environ.get("LIFELINE_PUBLIC_URL", f"http://localhost:{port}").rstrip("/")
+
+    store, authenticator, backend_name = build_backend()
+    monitor = Monitor(
+        store.list_all(),
+        escalate_after=timedelta(seconds=int(os.environ.get("ESCALATE_AFTER_SECONDS", "120"))),
+        offline_after=timedelta(seconds=int(os.environ.get("OFFLINE_AFTER_SECONDS", "90"))),
+        status_link=lambda patient: family_link(public_url, patient),
+    )
+    lifeline = Lifeline(monitor, store, build_notifier())
+
+    Handler.lifeline = lifeline
+    Handler.authenticator = authenticator
+    Handler.sessions = Sessions()
+    Handler.throttle = LoginThrottle()
+    Handler.public_url = public_url
+    Handler.twilio_auth_token = None
+    if os.environ.get("LIFELINE_NOTIFIER") == "twilio":
+        if not public_url.startswith("https://"):
+            raise SystemExit("Twilio mode needs LIFELINE_PUBLIC_URL set to your public https URL (e.g. ngrok)")
+        Handler.twilio_auth_token = os.environ["TWILIO_AUTH_TOKEN"]
+
+    stop = threading.Event()
+    threading.Thread(target=run_ticker, args=(lifeline, stop), daemon=True, name="ticker").start()
+    server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
+    log.info("Lifeline on http://0.0.0.0:%d · storage: %s · %d patients", port, backend_name, len(monitor.patients()))
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        stop.set()
+        server.server_close()
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,6 @@
+firmware/lifeline/config.h
+server/patients.json
+server/.env
+server/.patients-*
+__pycache__/
+.env
