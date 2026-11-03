@@ -1,5 +1,5 @@
-"""Offline adapters for development before Supabase is set up: patients in a JSON
-file, and one shared staff password from the environment."""
+"""Offline adapters for development before Supabase is set up: patients and
+incidents in JSON files, and one shared staff password from the environment."""
 
 from __future__ import annotations
 
@@ -7,10 +7,11 @@ import hmac
 import json
 import os
 import tempfile
+from datetime import datetime
 from pathlib import Path
 
-from domain import Patient
-from records import patient_from_record, patient_to_record
+from domain import Outage, Patient
+from records import outage_from_record, outage_to_record, patient_from_record, patient_to_record
 from staff import StaffMember
 
 
@@ -32,11 +33,38 @@ class JsonFilePatientStore:
         self._write([patient_to_record(p) for p in self.list_all() if p.device_id != device_id])
 
     def _write(self, records: list[dict]) -> None:
-        # Write-then-rename so a crash mid-write never leaves a half-written roster.
-        fd, temp_path = tempfile.mkstemp(dir=self._path.parent, prefix=".patients-")
-        with os.fdopen(fd, "w") as handle:
-            json.dump(records, handle, indent=2)
-        os.replace(temp_path, self._path)
+        _write_json_atomically(self._path, records)
+
+
+class JsonFileOutageStore:
+    """ponytail: rewrites the whole file per change; fine for a demo, use Supabase beyond that."""
+
+    def __init__(self, path: Path):
+        self._path = path
+
+    def list_open(self) -> list[Outage]:
+        return [o for o in self._all() if o.ended_at is None]
+
+    def list_since(self, since: datetime) -> list[Outage]:
+        return [o for o in self._all() if o.started_at >= since]
+
+    def save(self, outage: Outage) -> None:
+        records = {o.id: outage_to_record(o) for o in self._all()}
+        records[outage.id] = outage_to_record(outage)
+        _write_json_atomically(self._path, list(records.values()))
+
+    def _all(self) -> list[Outage]:
+        if not self._path.exists():
+            return []
+        return [outage_from_record(r) for r in json.loads(self._path.read_text())]
+
+
+def _write_json_atomically(path: Path, data: list[dict]) -> None:
+    # Write-then-rename so a crash mid-write never leaves a half-written file.
+    fd, temp_path = tempfile.mkstemp(dir=path.parent, prefix=f".{path.stem}-")
+    with os.fdopen(fd, "w") as handle:
+        json.dump(data, handle, indent=2)
+    os.replace(temp_path, path)
 
 
 class SharedPasswordAuthenticator:

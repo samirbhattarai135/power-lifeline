@@ -1,19 +1,21 @@
 """Application use cases: what devices, staff and families can do. Owns the
-locking around the Monitor and hands notifications to a Notifier off-thread.
-Storage arrives through the PatientStore port, so this module never knows
-whether patients live in a JSON file or in Supabase."""
+locking around the Monitor, hands notifications to a Notifier off-thread, and
+saves every changed incident off-thread. Storage arrives through the
+PatientStore and OutageStore ports, so this module never knows whether data
+lives in JSON files or in Supabase."""
 
 from __future__ import annotations
 
 import logging
 import secrets
 import threading
+import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
-from domain import InvalidPatient, Monitor, Notification, Patient, ReplyOutcome, UnknownDevice
+from domain import REPLY_SUFFIX, InvalidPatient, Monitor, Notification, Outage, Patient, ReplyOutcome, UnitHealth, UnknownDevice
 from records import patient_from_form
 
 log = logging.getLogger("lifeline.service")
@@ -23,6 +25,12 @@ class PatientStore(Protocol):
     def list_all(self) -> list[Patient]: ...
     def save(self, patient: Patient) -> None: ...
     def delete(self, device_id: str) -> None: ...
+
+
+class OutageStore(Protocol):
+    def list_open(self) -> list[Outage]: ...
+    def list_since(self, since: datetime) -> list[Outage]: ...
+    def save(self, outage: Outage) -> None: ...
 
 
 class Notifier(Protocol):
@@ -41,17 +49,24 @@ def new_token() -> str:
     return secrets.token_urlsafe(24)
 
 
+SAVE_ATTEMPTS = 3
+SAVE_BACKOFF_SECONDS = 1.0
+
+
 class Lifeline:
-    def __init__(self, monitor: Monitor, store: PatientStore, notifier: Notifier):
+    def __init__(self, monitor: Monitor, store: PatientStore, notifier: Notifier, outages: OutageStore):
         self._monitor = monitor
         self._store = store
         self._notifier = notifier
+        self._outages = outages
         # ponytail: one lock for every unit; fine for hundreds of patients, shard per unit if it grows.
         self._lock = threading.Lock()
         # Serialises roster edits (which do slow store I/O) without blocking device reports.
         self._roster_lock = threading.Lock()
         self._share_index = {p.share_token: p.device_id for p in monitor.patients()}
         self._senders = ThreadPoolExecutor(max_workers=4, thread_name_prefix="notify")
+        # One worker, so saves of the same incident land in the order they happened.
+        self._savers = ThreadPoolExecutor(max_workers=1, thread_name_prefix="save")
 
     # ---- devices ----------------------------------------------------------
 
@@ -59,25 +74,32 @@ class Lifeline:
         with self._lock:
             return self._monitor.patient(device_id).device_token
 
-    def report(self, device_id: str, has_wall_power: bool, battery_percent: int | None) -> None:
+    def report(self, device_id: str, has_wall_power: bool, battery_percent: int | None,
+               health: UnitHealth | None = None) -> None:
         with self._lock:
-            notifications = self._monitor.report(device_id, has_wall_power, battery_percent, utc_now())
+            notifications = self._monitor.report(device_id, has_wall_power, battery_percent, utc_now(), health)
+            self._save(self._monitor.drain_changes())
         self._dispatch(notifications)
 
     def tick(self) -> None:
         with self._lock:
             notifications = self._monitor.tick(utc_now())
+            self._save(self._monitor.drain_changes())
         self._dispatch(notifications)
 
     # ---- acknowledgments ----------------------------------------------------
 
     def acknowledge(self, device_id: str, by: str) -> bool:
         with self._lock:
-            return self._monitor.acknowledge(device_id, by)
+            acknowledged = self._monitor.acknowledge(device_id, by, utc_now())
+            self._save(self._monitor.drain_changes())
+        return acknowledged
 
     def acknowledge_by_reply(self, phone: str, text: str) -> ReplyOutcome:
         with self._lock:
-            return self._monitor.acknowledge_by_reply(phone, text)
+            outcome = self._monitor.acknowledge_by_reply(phone, text, utc_now())
+            self._save(self._monitor.drain_changes())
+        return outcome
 
     # ---- family status page -------------------------------------------------
 
@@ -100,13 +122,22 @@ class Lifeline:
             device_id = self._share_index.get(share_token)
             if device_id is None:
                 return False
-            return self._monitor.acknowledge(device_id, by="Family (status page)")
+            acknowledged = self._monitor.acknowledge(device_id, "Family (status page)", utc_now())
+            self._save(self._monitor.drain_changes())
+        return acknowledged
 
     # ---- staff: live board and roster --------------------------------------
 
     def snapshot(self) -> list[dict]:
         with self._lock:
             return self._monitor.snapshot(utc_now())
+
+    def history(self, days: int, device_id: str | None = None) -> list[Outage]:
+        """Incidents that started in the last `days` days, newest first."""
+        incidents = self._outages.list_since(utc_now() - timedelta(days=days))
+        if device_id is not None:
+            incidents = [i for i in incidents if i.device_id == device_id]
+        return sorted(incidents, key=lambda i: i.started_at, reverse=True)
 
     def roster(self) -> list[Patient]:
         with self._lock:
@@ -163,6 +194,29 @@ class Lifeline:
         for notification in notifications:
             self._senders.submit(self._notifier.send, notification).add_done_callback(_log_send_failure)
 
+    def _save(self, changes: list[Outage]) -> None:
+        # Call with self._lock held: queueing in lock order keeps an older snapshot from
+        # overwriting a newer one. submit() only enqueues; the write runs on the saver thread.
+        for incident in changes:
+            self._savers.submit(self._save_with_retry, incident)
+
+    def _save_with_retry(self, incident: Outage) -> None:
+        """A failed save must never stop an alert, so it is retried and logged, not raised.
+        If every attempt fails, only restart recovery and the report lose this change."""
+        for attempt in range(1, SAVE_ATTEMPTS + 1):
+            try:
+                self._outages.save(incident)
+                return
+            except Exception as error:  # any storage failure: network, HTTP, disk
+                if attempt == SAVE_ATTEMPTS:
+                    log.error("could not save incident %s for %s: %s", incident.id, incident.device_id, error)
+                    return
+                time.sleep(SAVE_BACKOFF_SECONDS * 2 ** (attempt - 1))
+
+    def wait_for_saves(self) -> None:
+        """Block until queued saves finish. For tests and orderly shutdown."""
+        self._savers.submit(lambda: None).result()
+
 
 def _responder_for_family(acknowledged_by: str | None) -> str | None:
     """Families see who is responding, not staff emails or phone numbers."""
@@ -170,7 +224,7 @@ def _responder_for_family(acknowledged_by: str | None) -> str | None:
         return None
     if acknowledged_by.endswith("(agency)"):
         return "The care agency"
-    if acknowledged_by.startswith("+"):
+    if acknowledged_by.endswith(REPLY_SUFFIX):
         return "Someone on the call list"
     return "A family member"
 
@@ -180,4 +234,4 @@ def _log_send_failure(future: Future) -> None:
         log.error("notification failed", exc_info=future.exception())
 
 
-__all__ = ["Lifeline", "PatientStore", "Notifier", "DuplicateDevice", "UnknownDevice", "InvalidPatient", "utc_now"]
+__all__ = ["Lifeline", "PatientStore", "OutageStore", "Notifier", "DuplicateDevice", "UnknownDevice", "InvalidPatient", "utc_now"]

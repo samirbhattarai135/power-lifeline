@@ -1,12 +1,14 @@
-"""The one place that knows the stored shape of a patient: a flat dict with a
-`contacts` list. Both the JSON file and the Supabase `patients` table use it, and
-the staff form posts the same shape minus the two tokens."""
+"""The one place that knows the stored shapes. A patient is a flat dict with a
+`contacts` list; both the JSON file and the Supabase `patients` table use it, and
+the staff form posts the same shape minus the two tokens. An incident (power
+outage or silent unit) is a flat dict with an `alerted` list, stored in `outages`."""
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
-from domain import Channel, Contact, InvalidPatient, Patient
+from domain import Alerted, Channel, Contact, IncidentKind, InvalidPatient, Outage, Patient
 
 
 def patient_to_record(patient: Patient) -> dict[str, Any]:
@@ -78,3 +80,48 @@ def _text(source: dict[str, Any], key: str) -> str:
     if not isinstance(value, str):
         raise InvalidPatient(f"{key} must be text")
     return value
+
+
+def outage_to_record(outage: Outage) -> dict[str, Any]:
+    return {
+        "id": outage.id,
+        "kind": outage.kind.value,
+        "device_id": outage.device_id,
+        "patient_name": outage.patient_name,
+        "equipment": outage.equipment,
+        "started_at": outage.started_at.isoformat(),
+        "ended_at": _iso(outage.ended_at),
+        "reply_code": outage.reply_code,
+        "escalation_step": outage.escalation_step,
+        "next_escalation_at": _iso(outage.next_escalation_at),
+        "acknowledged_by": outage.acknowledged_by,
+        "acknowledged_at": _iso(outage.acknowledged_at),
+        "alerted": [{"name": a.name, "role": a.role, "phone": a.phone, "at": a.at.isoformat()} for a in outage.alerted],
+    }
+
+
+def outage_from_record(record: dict[str, Any]) -> Outage:
+    return Outage(
+        id=record["id"],
+        kind=IncidentKind(record["kind"]),
+        device_id=record["device_id"],
+        patient_name=record["patient_name"],
+        equipment=record["equipment"],
+        started_at=datetime.fromisoformat(record["started_at"]),
+        ended_at=_datetime(record.get("ended_at")),
+        reply_code=record.get("reply_code") or "",
+        escalation_step=int(record.get("escalation_step") or 0),
+        next_escalation_at=_datetime(record.get("next_escalation_at")),
+        acknowledged_by=record.get("acknowledged_by"),
+        acknowledged_at=_datetime(record.get("acknowledged_at")),
+        alerted=[Alerted(a["name"], a["role"], a["phone"], datetime.fromisoformat(a["at"]))
+                 for a in record.get("alerted") or []],
+    )
+
+
+def _iso(moment: datetime | None) -> str | None:
+    return moment.isoformat() if moment else None
+
+
+def _datetime(text: str | None) -> datetime | None:
+    return datetime.fromisoformat(text) if text else None

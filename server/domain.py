@@ -4,8 +4,10 @@ the returned notifications themselves."""
 
 from __future__ import annotations
 
+import copy
 import re
 import secrets
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
@@ -16,6 +18,7 @@ PHONE_PATTERN = re.compile(r"^\+[1-9]\d{7,14}$")  # E.164, which is what SMS/voi
 MAX_CONTACTS = 6
 MAX_BACKUP_MINUTES = 48 * 60
 MAX_TEXT_LENGTH = 120
+AGENCY_ROLE_WORDS = ("agency", "nurse", "home health")  # roles are free text; these mark care staff
 
 
 class InvalidPatient(ValueError):
@@ -46,6 +49,9 @@ class Contact:
         _require_text(self.name, "Contact name")
         if not PHONE_PATTERN.match(self.phone):
             raise InvalidPatient(f"{self.name}'s phone must look like +16015550123")
+
+    def is_care_staff(self) -> bool:
+        return any(word in self.role.lower() for word in AGENCY_ROLE_WORDS)
 
 
 @dataclass(frozen=True)
@@ -79,22 +85,63 @@ class Patient:
             raise InvalidPatient(f"Add between 1 and {MAX_CONTACTS} contacts")
 
 
+
+
 @dataclass(frozen=True)
 class Notification:
     contact: Contact
     message: str
 
 
+class IncidentKind(Enum):
+    POWER = "power"    # wall power lost at the patient's home
+    SILENT = "silent"  # the unit stopped reporting: its Wi-Fi, or its own battery, may be down
+
+
+@dataclass(frozen=True)
+class Alerted:
+    """One person we alerted, kept with the incident so replies, restores and the
+    report all agree on who was told and when."""
+    name: str
+    role: str
+    phone: str
+    at: datetime
+
+
+@dataclass(frozen=True)
+class UnitHealth:
+    """Optional heartbeat extras. Older firmware sends none of them."""
+    rssi: int | None = None       # Wi-Fi signal in dBm
+    firmware: str | None = None
+    uptime_s: int | None = None
+
+
 @dataclass
 class Outage:
+    """One incident at one home, from the first alert until it ends. Saved on every change,
+    so a restarted server resumes escalation where it stopped instead of starting over."""
+    id: str
+    kind: IncidentKind
+    device_id: str
+    patient_name: str   # snapshots: the report must survive the patient being renamed or removed
+    equipment: str
     started_at: datetime
-    escalation_step: int
-    next_escalation_at: datetime | None
-    reply_code: str  # in every alert, so "OK <code>" names exactly this outage
+    reply_code: str = ""  # power outages: in every alert, so "OK <code>" names exactly this outage
+    escalation_step: int = 0
+    next_escalation_at: datetime | None = None
     acknowledged_by: str | None = None
+    acknowledged_at: datetime | None = None
+    ended_at: datetime | None = None
+    alerted: list[Alerted] = field(default_factory=list)
 
     def is_escalating(self) -> bool:
         return self.acknowledged_by is None and self.next_escalation_at is not None
+
+    def was_alerted(self, phone: str) -> bool:
+        return any(a.phone == phone for a in self.alerted)
+
+    def alerted_names(self) -> list[str]:
+        return list(dict.fromkeys(a.name for a in self.alerted))
 
 
 @dataclass
@@ -103,8 +150,9 @@ class Unit:
     has_wall_power: bool | None = None  # None until the device first reports
     battery_percent: int | None = None
     last_seen: datetime | None = None
+    health: UnitHealth = field(default_factory=UnitHealth)
     outage: Outage | None = None
-    notified_phones: set[str] = field(default_factory=set)
+    silent: Outage | None = None
 
 
 class UnknownDevice(Exception):
@@ -123,6 +171,7 @@ class ReplyOutcome:
     device_id: str | None = None
 
 
+REPLY_SUFFIX = "(text reply)"  # marks an acknowledgment that came from someone on the call list
 REPLY_PATTERN = re.compile(r"^\s*OK\W*(\d{4})?\b", re.IGNORECASE)  # "OK", "ok 4821", "OK4821"; not "okay"
 
 
@@ -130,19 +179,36 @@ def random_reply_code() -> str:
     return f"{secrets.randbelow(10_000):04d}"
 
 
+def new_incident_id() -> str:
+    return str(uuid.uuid4())
+
+
 class Monitor:
     """Live state of every unit. `status_link` turns a patient into the URL their
-    family can open; the URL format is the caller's business, not this module's."""
+    family can open; the URL format is the caller's business, not this module's.
+
+    Every incident that changes is queued; the caller drains the queue with
+    `drain_changes()` and saves it. Pass the saved open incidents back in as
+    `open_incidents` after a restart."""
 
     def __init__(self, patients: list[Patient], escalate_after: timedelta, offline_after: timedelta,
-                 status_link: Callable[[Patient], str], new_reply_code: Callable[[], str] = random_reply_code):
+                 status_link: Callable[[Patient], str], new_reply_code: Callable[[], str] = random_reply_code,
+                 silent_alert_after: timedelta = timedelta(minutes=5),
+                 open_incidents: list[Outage] = (), new_id: Callable[[], str] = new_incident_id):
         self._units: dict[str, Unit] = {}
         self._escalate_after = escalate_after
-        self._offline_after = offline_after
+        self._offline_after = offline_after  # when the board shows a unit as quiet
+        # When someone is alerted about it. Longer than offline_after: a hotspot can take
+        # half a minute to reconnect, and a page for every blip teaches people to ignore pages.
+        self._silent_alert_after = silent_alert_after
         self._status_link = status_link
         self._new_reply_code = new_reply_code
+        self._new_id = new_id
+        self._changed: list[Outage] = []
         for patient in patients:
             self.upsert_patient(patient)
+        for incident in open_incidents:
+            self._restore(incident)
 
     # ---- patient roster -------------------------------------------------
 
@@ -169,28 +235,36 @@ class Monitor:
     # ---- device reports and escalation ---------------------------------
 
     def report(self, device_id: str, has_wall_power: bool, battery_percent: int | None,
-               now: datetime) -> list[Notification]:
+               now: datetime, health: UnitHealth | None = None) -> list[Notification]:
         unit = self._unit(device_id)
         unit.last_seen = now
         unit.battery_percent = battery_percent
         unit.has_wall_power = has_wall_power
+        if health is not None:
+            unit.health = health
 
+        notifications = []
+        if unit.silent is not None:
+            # A power-loss alert below already tells people the unit is back; don't send two.
+            notifications += self._end_silence(unit, now, announce=has_wall_power)
         if not has_wall_power and unit.outage is None:
-            return self._start_outage(unit, now)
-        if has_wall_power and unit.outage is not None:
-            return self._end_outage(unit, now)
-        return []
+            notifications += self._start_outage(unit, now)
+        elif has_wall_power and unit.outage is not None:
+            notifications += self._end_outage(unit, now)
+        return notifications
 
-    def acknowledge(self, device_id: str, by: str) -> bool:
+    def acknowledge(self, device_id: str, by: str, now: datetime) -> bool:
         """Stop escalation for the current outage. False if there is nothing to acknowledge."""
         outage = self._unit(device_id).outage
         if outage is None or outage.acknowledged_by is not None:
             return False
         outage.acknowledged_by = by
+        outage.acknowledged_at = now
         outage.next_escalation_at = None
+        self._touch(outage)
         return True
 
-    def acknowledge_by_reply(self, phone: str, text: str) -> ReplyOutcome:
+    def acknowledge_by_reply(self, phone: str, text: str, now: datetime) -> ReplyOutcome:
         """Handle an SMS reply. "OK 4821" acknowledges the outage with that code, if this
         phone was alerted about it. A bare "OK" works only when exactly one open outage
         alerted this phone; with several, guessing could stop the wrong patient's alerts."""
@@ -199,31 +273,31 @@ class Monitor:
             return ReplyOutcome(ReplyResult.NOTHING_OPEN)
         code = match.group(1)
         open_for_phone = [u for u in self._units.values()
-                          if u.outage and u.outage.acknowledged_by is None and phone in u.notified_phones]
+                          if u.outage and u.outage.acknowledged_by is None and u.outage.was_alerted(phone)]
         if code is not None:
             open_for_phone = [u for u in open_for_phone if u.outage.reply_code == code]
         if not open_for_phone:
             return ReplyOutcome(ReplyResult.NOTHING_OPEN)
         if len(open_for_phone) > 1:
             return ReplyOutcome(ReplyResult.AMBIGUOUS)
-        device_id = open_for_phone[0].patient.device_id
-        self.acknowledge(device_id, phone)
-        return ReplyOutcome(ReplyResult.ACKNOWLEDGED, device_id)
+        unit = open_for_phone[0]
+        # Record who, not their number: this text shows on the board, the history and the report.
+        name = next(a.name for a in unit.outage.alerted if a.phone == phone)
+        self.acknowledge(unit.patient.device_id, f"{name} {REPLY_SUFFIX}", now)
+        return ReplyOutcome(ReplyResult.ACKNOWLEDGED, unit.patient.device_id)
 
     def tick(self, now: datetime) -> list[Notification]:
         notifications = []
         for unit in self._units.values():
-            outage = unit.outage
-            if outage is None or not outage.is_escalating() or now < outage.next_escalation_at:
-                continue
-            outage.escalation_step += 1
-            contacts = unit.patient.contacts
-            if outage.escalation_step >= len(contacts):
-                outage.next_escalation_at = None  # everyone on the list has been alerted
-                continue
-            outage.next_escalation_at = now + self._escalate_after
-            notifications.append(self._alert(unit, contacts[outage.escalation_step], outage, now))
+            notifications += self._escalate(unit, now)
+            if self._has_gone_silent(unit, now):
+                notifications += self._start_silence(unit, now)
         return notifications
+
+    def drain_changes(self) -> list[Outage]:
+        """Copies of every incident changed since the last call, oldest change first."""
+        changed, self._changed = self._changed, []
+        return [copy.deepcopy(incident) for incident in changed]
 
     # ---- read models ------------------------------------------------------
 
@@ -235,7 +309,7 @@ class Monitor:
     def status(self, device_id: str, now: datetime) -> dict:
         return self._row(self._unit(device_id), now)
 
-    # ---- internals --------------------------------------------------------
+    # ---- internals: power outages -----------------------------------------
 
     def _unit(self, device_id: str) -> Unit:
         unit = self._units.get(device_id)
@@ -244,21 +318,38 @@ class Monitor:
         return unit
 
     def _start_outage(self, unit: Unit, now: datetime) -> list[Notification]:
-        unit.outage = Outage(started_at=now, escalation_step=0, next_escalation_at=now + self._escalate_after,
-                             reply_code=self._unused_reply_code())
-        unit.notified_phones = set()
-        return [self._alert(unit, unit.patient.contacts[0], unit.outage, now)]
+        p = unit.patient
+        unit.outage = Outage(id=self._new_id(), kind=IncidentKind.POWER, device_id=p.device_id,
+                             patient_name=p.name, equipment=p.equipment, started_at=now,
+                             reply_code=self._unused_reply_code(), next_escalation_at=now + self._escalate_after)
+        return [self._alert(unit, p.contacts[0], unit.outage, now)]
+
+    def _escalate(self, unit: Unit, now: datetime) -> list[Notification]:
+        outage = unit.outage
+        if outage is None or not outage.is_escalating() or now < outage.next_escalation_at:
+            return []
+        outage.escalation_step += 1
+        self._touch(outage)
+        contacts = unit.patient.contacts
+        if outage.escalation_step >= len(contacts):
+            outage.next_escalation_at = None  # everyone on the list has been alerted
+            return []
+        outage.next_escalation_at = now + self._escalate_after
+        return [self._alert(unit, contacts[outage.escalation_step], outage, now)]
 
     def _end_outage(self, unit: Unit, now: datetime) -> list[Notification]:
-        minutes = int((now - unit.outage.started_at).total_seconds() // 60)
-        message = f"Lifeline: Power is back on at {unit.patient.name}'s home after {minutes} min."
-        notifications = [Notification(c, message) for c in unit.patient.contacts if c.phone in unit.notified_phones]
+        outage = unit.outage
+        outage.ended_at = now
+        outage.next_escalation_at = None
+        self._touch(outage)
         unit.outage = None
-        unit.notified_phones = set()
-        return notifications
+        minutes = int((now - outage.started_at).total_seconds() // 60)
+        message = f"Lifeline: Power is back on at {unit.patient.name}'s home after {minutes} min."
+        return [Notification(c, message) for c in unit.patient.contacts if outage.was_alerted(c.phone)]
 
     def _alert(self, unit: Unit, contact: Contact, outage: Outage, now: datetime) -> Notification:
-        unit.notified_phones.add(contact.phone)
+        outage.alerted.append(Alerted(contact.name, contact.role, contact.phone, now))
+        self._touch(outage)
         p = unit.patient
         left = self._backup_left(p, outage, now)
         message = (f"Lifeline alert: Power is out at {p.name}'s home, {p.address}. "
@@ -273,6 +364,54 @@ class Monitor:
             pass
         return code
 
+    # ---- internals: silent units ------------------------------------------------
+
+    def _has_gone_silent(self, unit: Unit, now: datetime) -> bool:
+        # Never-seen units are being set up, and a running power outage already has people
+        # on the way, so neither gets a separate "unit is silent" alert.
+        return (unit.last_seen is not None and unit.outage is None and unit.silent is None
+                and now - unit.last_seen >= self._silent_alert_after)
+
+    def _start_silence(self, unit: Unit, now: datetime) -> list[Notification]:
+        p = unit.patient
+        unit.silent = Outage(id=self._new_id(), kind=IncidentKind.SILENT, device_id=p.device_id,
+                             patient_name=p.name, equipment=p.equipment, started_at=unit.last_seen)
+        minutes = max(1, int((now - unit.last_seen).total_seconds() // 60))
+        message = (f"Lifeline: The power unit at {p.name}'s home has been silent for {minutes} min. "
+                   f"Its Wi-Fi or power may be down. Please check on {p.name}. Live status: {self._status_link(p)}")
+        recipients = [c for c in p.contacts if c.is_care_staff()] or [p.contacts[0]]
+        for contact in recipients:
+            unit.silent.alerted.append(Alerted(contact.name, contact.role, contact.phone, now))
+        self._touch(unit.silent)
+        return [Notification(c, message) for c in recipients]
+
+    def _end_silence(self, unit: Unit, now: datetime, announce: bool) -> list[Notification]:
+        silent = unit.silent
+        silent.ended_at = now
+        self._touch(silent)
+        unit.silent = None
+        if not announce:
+            return []
+        message = f"Lifeline: The power unit at {unit.patient.name}'s home is reporting again, and the power is on."
+        return [Notification(c, message) for c in unit.patient.contacts if silent.was_alerted(c.phone)]
+
+    # ---- internals: persistence ----------------------------------------------------
+
+    def _touch(self, incident: Outage) -> None:
+        if not any(queued is incident for queued in self._changed):
+            self._changed.append(incident)
+
+    def _restore(self, incident: Outage) -> None:
+        unit = self._units.get(incident.device_id)
+        if unit is None or incident.ended_at is not None:
+            return  # patient removed since, or already over
+        if incident.kind is IncidentKind.POWER:
+            unit.outage = incident
+        else:
+            unit.silent = incident
+
+    # ---- internals: read model ------------------------------------------------------
+
     @staticmethod
     def _backup_left(patient: Patient, outage: Outage, now: datetime) -> int:
         elapsed = (now - outage.started_at).total_seconds() / 60
@@ -280,10 +419,11 @@ class Monitor:
 
     def _row(self, unit: Unit, now: datetime) -> dict:
         p, outage = unit.patient, unit.outage
-        if unit.last_seen is None:
-            status = "never_seen"
-        elif outage is not None:
+        # A restored outage has no report yet, but it is still an outage.
+        if outage is not None:
             status = "outage"
+        elif unit.last_seen is None:
+            status = "never_seen"
         elif now - unit.last_seen > self._offline_after:
             status = "offline"
         else:
@@ -300,9 +440,12 @@ class Monitor:
             "status": status,
             "battery_percent": unit.battery_percent,
             "last_seen": unit.last_seen.isoformat() if unit.last_seen else None,
+            "rssi": unit.health.rssi,
+            "firmware": unit.health.firmware,
+            "uptime_s": unit.health.uptime_s,
+            "silent_alert_sent": unit.silent is not None,
             "outage_started": outage.started_at.isoformat() if outage else None,
             "backup_minutes_left": self._backup_left(p, outage, now) if outage else None,
             "acknowledged_by": outage.acknowledged_by if outage else None,
-            "contacts_alerted": [c.name for c in p.contacts if c.phone in unit.notified_phones],
+            "contacts_alerted": outage.alerted_names() if outage else [],
         }
-

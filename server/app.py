@@ -10,7 +10,9 @@ Run:  python3 app.py   (see README for Supabase and Twilio settings)
 
 from __future__ import annotations
 
+import csv
 import hmac
+import io
 import json
 import logging
 import mimetypes
@@ -25,19 +27,22 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable
 
-from domain import InvalidPatient, Monitor, Patient, ReplyResult, UnknownDevice
-from local import JsonFilePatientStore, SharedPasswordAuthenticator
+from domain import DEVICE_ID_PATTERN, IncidentKind, InvalidPatient, Monitor, Outage, Patient, ReplyResult, UnitHealth, UnknownDevice
+from local import JsonFileOutageStore, JsonFilePatientStore, SharedPasswordAuthenticator
 from notifiers import WHATSAPP_PREFIX, ConsoleNotifier, NtfyNotifier, TwilioNotifier, is_valid_twilio_signature
 from records import patient_to_record
-from service import DuplicateDevice, Lifeline, Notifier, PatientStore
+from service import DuplicateDevice, Lifeline, Notifier, OutageStore, PatientStore
 from staff import LoginThrottle, Sessions, StaffAuthenticator, StaffMember
-from supabase_backend import SupabaseAuthenticator, SupabaseClient, SupabaseError, SupabasePatientStore
+from supabase_backend import SupabaseAuthenticator, SupabaseClient, SupabaseError, SupabaseOutageStore, SupabasePatientStore
 
 HERE = Path(__file__).parent
 STATIC = HERE / "static"
 MAX_BODY_BYTES = 16 * 1024
 SESSION_COOKIE = "lifeline_session"
 LOOPBACK_ADDRESSES = {"127.0.0.1", "::1"}
+FIRMWARE_PATTERN = re.compile(r"^[A-Za-z0-9._+-]{1,32}$")
+MAX_UPTIME_SECONDS = 10 * 365 * 24 * 3600
+HISTORY_DAYS_DEFAULT, HISTORY_DAYS_MAX = 30, 365
 SMS_REPLIES = {
     ReplyResult.ACKNOWLEDGED: "Thanks. You're marked as responding, so we've stopped alerting the rest of the call list.",
     ReplyResult.AMBIGUOUS: "You're on the call list for more than one home without power. "
@@ -158,7 +163,7 @@ class Handler(BaseHTTPRequestHandler):
             battery = None
         if not hmac.compare_digest(self.headers.get("X-Device-Token", ""), self.lifeline.device_token(device_id)):
             raise HttpError(HTTPStatus.UNAUTHORIZED, "bad device token")
-        self.lifeline.report(device_id, has_wall_power, battery)
+        self.lifeline.report(device_id, has_wall_power, battery, unit_health(data))
         self._send_json(HTTPStatus.OK, {"ok": True})
 
     def api_sms_inbound(self) -> None:
@@ -240,6 +245,37 @@ class Handler(BaseHTTPRequestHandler):
     def api_delete_patient(self, device_id: str) -> None:
         self.lifeline.remove_patient(device_id)
         self._send_json(HTTPStatus.OK, {"ok": True})
+
+    def api_history(self) -> None:
+        days, device_id = self._history_query()
+        rows = [incident_view(i) for i in self.lifeline.history(days, device_id)]
+        self._send_json(HTTPStatus.OK, {"days": days, "incidents": rows})
+
+    def api_history_csv(self) -> None:
+        days, device_id = self._history_query()
+        body = incidents_csv(self.lifeline.history(days, device_id)).encode()
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/csv; charset=utf-8")
+        self.send_header("Content-Disposition", f'attachment; filename="lifeline-incidents-last-{days}-days.csv"')
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        for name, value in SECURITY_HEADERS.items():
+            self.send_header(name, value)
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _history_query(self) -> tuple[int, str | None]:
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        try:
+            days = int(query.get("days", [HISTORY_DAYS_DEFAULT])[0])
+        except ValueError:
+            raise HttpError(HTTPStatus.BAD_REQUEST, "days must be a whole number") from None
+        if not 1 <= days <= HISTORY_DAYS_MAX:
+            raise HttpError(HTTPStatus.BAD_REQUEST, f"days must be between 1 and {HISTORY_DAYS_MAX}")
+        device_id = query.get("device_id", [None])[0]
+        if device_id is not None and not DEVICE_ID_PATTERN.match(device_id):
+            raise HttpError(HTTPStatus.BAD_REQUEST, "Unknown unit ID format")
+        return days, device_id
 
     def _staff_view(self, patient: Patient) -> dict:
         record = patient_to_record(patient)
@@ -345,6 +381,8 @@ Handler.routes = [
     Route("GET", r"/api/me", Handler.api_me, staff_only=True),
     Route("GET", r"/api/status", Handler.api_status, staff_only=True),
     Route("POST", r"/api/ack/([a-z0-9-]+)", Handler.api_staff_ack, staff_only=True),
+    Route("GET", r"/api/history", Handler.api_history, staff_only=True),
+    Route("GET", r"/api/history\.csv", Handler.api_history_csv, staff_only=True),
     Route("GET", r"/api/patients", Handler.api_list_patients, staff_only=True),
     Route("POST", r"/api/patients", Handler.api_add_patient, staff_only=True),
     Route("PUT", r"/api/patients/([a-z0-9-]+)", Handler.api_update_patient, staff_only=True),
@@ -357,18 +395,111 @@ def family_link(public_url: str, patient: Patient) -> str:
     return f"{public_url}/s/{patient.share_token}"
 
 
+# ---- presenters ------------------------------------------------------------------
+
+def unit_health(data: dict) -> UnitHealth:
+    """Optional heartbeat extras; anything malformed is dropped, never rejected,
+    so a firmware bug can't stop the power report that matters."""
+    rssi, firmware, uptime = data.get("rssi"), data.get("fw"), data.get("uptime_s")
+    return UnitHealth(
+        rssi=rssi if _is_int(rssi) and -127 <= rssi <= 0 else None,
+        firmware=firmware if isinstance(firmware, str) and FIRMWARE_PATTERN.match(firmware) else None,
+        uptime_s=uptime if _is_int(uptime) and 0 <= uptime <= MAX_UPTIME_SECONDS else None,
+    )
+
+
+def _is_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _minutes_between(start, end) -> int | None:
+    return int((end - start).total_seconds() // 60) if start and end else None
+
+
+def incident_view(incident: Outage) -> dict:
+    """What staff see about an incident. Names and roles of the people alerted, never their numbers."""
+    return {
+        "id": incident.id,
+        "kind": incident.kind.value,
+        "device_id": incident.device_id,
+        "patient_name": incident.patient_name,
+        "equipment": incident.equipment,
+        "started_at": incident.started_at.isoformat(),
+        "ended_at": incident.ended_at.isoformat() if incident.ended_at else None,
+        "duration_minutes": _minutes_between(incident.started_at, incident.ended_at),
+        "acknowledged_by": incident.acknowledged_by,
+        "acknowledged_at": incident.acknowledged_at.isoformat() if incident.acknowledged_at else None,
+        "response_minutes": _minutes_between(incident.started_at, incident.acknowledged_at),
+        "alerted": [{"name": a.name, "role": a.role, "at": a.at.isoformat()} for a in incident.alerted],
+    }
+
+
+CSV_COLUMNS = ["Started (UTC)", "Ended (UTC)", "Duration (min)", "Type", "Patient", "Unit", "Equipment",
+               "People alerted", "First alert (UTC)", "Responded by", "Response time (min)"]
+
+
+def incidents_csv(incidents: list[Outage]) -> str:
+    """The inspector's evidence of emergency outreach: one row per incident."""
+    out = io.StringIO()
+    writer = csv.writer(out)
+    writer.writerow(CSV_COLUMNS)
+    for i in incidents:
+        writer.writerow([_csv_safe(v) for v in (
+            _utc_text(i.started_at),
+            _utc_text(i.ended_at) if i.ended_at else "ongoing",
+            _blank_if_none(_minutes_between(i.started_at, i.ended_at)),
+            "Power outage" if i.kind is IncidentKind.POWER else "Unit silent",
+            i.patient_name,
+            i.device_id,
+            i.equipment,
+            "; ".join(f"{a.name} ({a.role}) {_utc_text(a.at)}" for a in i.alerted),
+            _utc_text(i.alerted[0].at) if i.alerted else "",
+            i.acknowledged_by or "",
+            _blank_if_none(_minutes_between(i.started_at, i.acknowledged_at)),
+        )])
+    return out.getvalue()
+
+
+def _blank_if_none(value: object) -> object:
+    return "" if value is None else value
+
+
+def _utc_text(moment) -> str:
+    return moment.strftime("%Y-%m-%d %H:%M")
+
+
+def _csv_safe(value: object) -> object:
+    # Spreadsheets run cells starting with these as formulas; names come from staff input.
+    if isinstance(value, str) and value[:1] in ("=", "+", "-", "@"):
+        return "'" + value
+    return value
+
+
 # ---- composition root ---------------------------------------------------------
 
-def build_backend() -> tuple[PatientStore, StaffAuthenticator, str]:
+def build_backend() -> tuple[PatientStore, OutageStore, StaffAuthenticator, str]:
     url, key = os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_SECRET_KEY")
     if url and key:
         client = SupabaseClient(url, key)
-        return SupabasePatientStore(client), SupabaseAuthenticator(client), "Supabase"
+        return SupabasePatientStore(client), SupabaseOutageStore(client), SupabaseAuthenticator(client), "Supabase"
     password = os.environ.get("LIFELINE_ADMIN_PASSWORD")
     if not password:
         raise SystemExit("Set SUPABASE_URL + SUPABASE_SECRET_KEY, or LIFELINE_ADMIN_PASSWORD for local mode.")
     patients_file = Path(os.environ.get("LIFELINE_PATIENTS", HERE / "patients.json"))
-    return JsonFilePatientStore(patients_file), SharedPasswordAuthenticator(password), f"local file {patients_file.name}"
+    outages_file = Path(os.environ.get("LIFELINE_OUTAGES", HERE / "outages.json"))
+    return (JsonFilePatientStore(patients_file), JsonFileOutageStore(outages_file),
+            SharedPasswordAuthenticator(password), f"local files {patients_file.name}, {outages_file.name}")
+
+
+def load_open_incidents(outages: OutageStore) -> list[Outage]:
+    """Open incidents from before a restart. Without them, the next heartbeat from a unit
+    still in an outage would open a new one and alert the first contact all over again."""
+    try:
+        return outages.list_open()
+    except SupabaseError as error:
+        log.error("%s. Alerts still work, but history and restart recovery are off until "
+                  "supabase/migrations/002_outages.sql has been run.", error)
+        return []
 
 
 def build_notifier() -> Notifier:
@@ -411,14 +542,18 @@ def main() -> None:
     port = int(os.environ.get("PORT", "8080"))
     public_url = os.environ.get("LIFELINE_PUBLIC_URL", f"http://localhost:{port}").rstrip("/")
 
-    store, authenticator, backend_name = build_backend()
+    store, outages, authenticator, backend_name = build_backend()
+    open_incidents = load_open_incidents(outages)
+    # The Monitor is fully restored before the ticker starts or the port opens.
     monitor = Monitor(
         store.list_all(),
         escalate_after=timedelta(seconds=int(os.environ.get("ESCALATE_AFTER_SECONDS", "120"))),
         offline_after=timedelta(seconds=int(os.environ.get("OFFLINE_AFTER_SECONDS", "90"))),
+        silent_alert_after=timedelta(seconds=int(os.environ.get("SILENT_ALERT_AFTER_SECONDS", "300"))),
         status_link=lambda patient: family_link(public_url, patient),
+        open_incidents=open_incidents,
     )
-    lifeline = Lifeline(monitor, store, build_notifier())
+    lifeline = Lifeline(monitor, store, build_notifier(), outages)
 
     Handler.lifeline = lifeline
     Handler.authenticator = authenticator
@@ -434,7 +569,8 @@ def main() -> None:
     stop = threading.Event()
     threading.Thread(target=run_ticker, args=(lifeline, stop), daemon=True, name="ticker").start()
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
-    log.info("Lifeline on http://0.0.0.0:%d · storage: %s · %d patients", port, backend_name, len(monitor.patients()))
+    log.info("Lifeline on http://0.0.0.0:%d · storage: %s · %d patients · %d open incidents restored",
+             port, backend_name, len(monitor.patients()), len(open_incidents))
     try:
         server.serve_forever()
     except KeyboardInterrupt:

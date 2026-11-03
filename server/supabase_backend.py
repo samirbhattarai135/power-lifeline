@@ -1,4 +1,4 @@
-"""Supabase adapters: the `patients` table through PostgREST, and staff sign-in
+"""Supabase adapters: the `patients` and `outages` tables through PostgREST, and staff sign-in
 through Supabase Auth. Uses the server-only secret key; that key bypasses row
 level security, which is why the table has RLS on with no policies (see
 supabase/migrations). Never send this key to a browser."""
@@ -10,10 +10,11 @@ import logging
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime
 from typing import Any
 
-from domain import Patient
-from records import patient_from_record, patient_to_record
+from domain import Outage, Patient
+from records import outage_from_record, outage_to_record, patient_from_record, patient_to_record
 from staff import StaffMember
 
 log = logging.getLogger("lifeline.supabase")
@@ -62,7 +63,7 @@ class SupabasePatientStore:
 
     def list_all(self) -> list[Patient]:
         status, rows = self._client.request("GET", f"{self.TABLE}?select=*")
-        self._expect(status, rows, "load patients")
+        _expect(status, rows, "load patients")
         return [patient_from_record(row) for row in rows]
 
     def save(self, patient: Patient) -> None:
@@ -70,17 +71,43 @@ class SupabasePatientStore:
             "POST", self.TABLE, [patient_to_record(patient)],
             {"Prefer": "resolution=merge-duplicates,return=minimal"},
         )
-        self._expect(status, body, f"save patient {patient.device_id}")
+        _expect(status, body, f"save patient {patient.device_id}")
 
     def delete(self, device_id: str) -> None:
         status, body = self._client.request("DELETE", f"{self.TABLE}?device_id=eq.{urllib.parse.quote(device_id)}")
-        self._expect(status, body, f"delete patient {device_id}")
+        _expect(status, body, f"delete patient {device_id}")
 
-    @staticmethod
-    def _expect(status: int, body: Any, action: str) -> None:
-        if not 200 <= status < 300:
-            detail = body.get("message") if isinstance(body, dict) else body
-            raise SupabaseError(f"Supabase could not {action}: HTTP {status} {detail}")
+
+class SupabaseOutageStore:
+    TABLE = "/rest/v1/outages"
+
+    def __init__(self, client: SupabaseClient):
+        self._client = client
+
+    def list_open(self) -> list[Outage]:
+        return self._list("ended_at=is.null", "load open incidents")
+
+    def list_since(self, since: datetime) -> list[Outage]:
+        return self._list(f"started_at=gte.{urllib.parse.quote(since.isoformat())}&order=started_at.desc",
+                          "load incident history")
+
+    def save(self, outage: Outage) -> None:
+        status, body = self._client.request(
+            "POST", self.TABLE, [outage_to_record(outage)],
+            {"Prefer": "resolution=merge-duplicates,return=minimal"},
+        )
+        _expect(status, body, f"save incident {outage.id}")
+
+    def _list(self, query: str, action: str) -> list[Outage]:
+        status, rows = self._client.request("GET", f"{self.TABLE}?select=*&{query}")
+        _expect(status, rows, action)
+        return [outage_from_record(row) for row in rows]
+
+
+def _expect(status: int, body: Any, action: str) -> None:
+    if not 200 <= status < 300:
+        detail = body.get("message") if isinstance(body, dict) else body
+        raise SupabaseError(f"Supabase could not {action}: HTTP {status} {detail}")
 
 
 class SupabaseAuthenticator:
