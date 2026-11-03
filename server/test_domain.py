@@ -8,9 +8,9 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from domain import Channel, Contact, InvalidPatient, Monitor, Patient, ReplyResult, UnknownDevice
+from domain import Channel, Contact, InvalidPatient, Monitor, Notification, Patient, ReplyResult, UnknownDevice
 from local import JsonFilePatientStore, SharedPasswordAuthenticator
-from notifiers import is_valid_twilio_signature
+from notifiers import NtfyNotifier, TwilioNotifier, is_valid_twilio_signature
 from records import patient_from_form, patient_from_record, patient_to_record
 from service import DuplicateDevice, Lifeline
 from staff import LoginThrottle, Sessions, StaffMember
@@ -262,6 +262,30 @@ class Webhooks(unittest.TestCase):
         self.assertTrue(is_valid_twilio_signature("12345", url, params, "0/KCTR6DLpKmkAf8muzZqo1nDgQ="))
         self.assertFalse(is_valid_twilio_signature("12345", url, params, "bogus"))
 
+    def test_whatsapp_sender_turns_every_alert_into_a_whatsapp_message(self):
+        sent = []
+        notifier = TwilioNotifier("AC123", "token", "whatsapp:+14155238886")
+        notifier._post = lambda resource, fields: sent.append((resource, fields))
+        caller = Contact(name="Sam", role="caregiver", phone="+16015550100", channel=Channel.CALL)
+        notifier.send(Notification(caller, "Lifeline alert: Power is out. Reply OK 1234"))
+        self.assertEqual(sent, [("Messages", {"To": "whatsapp:+16015550100", "From": "whatsapp:+14155238886",
+                                              "Body": "Lifeline alert: Power is out. Reply OK 1234"})])
+
+
+class NtfyPush(unittest.TestCase):
+    def test_alert_is_pushed_urgently_to_the_topic_with_full_text(self):
+        sent = []
+        notifier = NtfyNotifier("lifeline-0123456789abcdef")
+        notifier._post = sent.append
+        nurse = Contact(name="On-call nurse", role="agency", phone="+16015550100", channel=Channel.CALL)
+        notifier.send(Notification(nurse, "Lifeline alert: Power is out. Reply OK 1234"))
+        self.assertEqual(sent, [{"topic": "lifeline-0123456789abcdef", "title": "For On-call nurse (agency)",
+                                 "message": "Lifeline alert: Power is out. Reply OK 1234",
+                                 "priority": 5, "tags": ["rotating_light"]}])
+
+    def test_short_guessable_topic_is_rejected(self):
+        with self.assertRaises(ValueError):
+            NtfyNotifier("lifeline")
 
 class FakeSupabase(BaseHTTPRequestHandler):
     """Records requests and answers like PostgREST / GoTrue would."""

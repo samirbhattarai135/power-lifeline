@@ -27,7 +27,7 @@ from typing import Callable
 
 from domain import InvalidPatient, Monitor, Patient, ReplyResult, UnknownDevice
 from local import JsonFilePatientStore, SharedPasswordAuthenticator
-from notifiers import ConsoleNotifier, TwilioNotifier, is_valid_twilio_signature
+from notifiers import WHATSAPP_PREFIX, ConsoleNotifier, NtfyNotifier, TwilioNotifier, is_valid_twilio_signature
 from records import patient_to_record
 from service import DuplicateDevice, Lifeline, Notifier, PatientStore
 from staff import LoginThrottle, Sessions, StaffAuthenticator, StaffMember
@@ -171,7 +171,8 @@ class Handler(BaseHTTPRequestHandler):
             # Without Twilio there is no signature to check, so a forged "OK" could silence an
             # alert. Fail closed: only simulated replies from this machine are accepted.
             raise HttpError(HTTPStatus.FORBIDDEN, "SMS replies need Twilio signature checking")
-        outcome = self.lifeline.acknowledge_by_reply(params.get("From", ""), params.get("Body", ""))
+        sender = params.get("From", "").removeprefix(WHATSAPP_PREFIX)  # WhatsApp replies arrive as "whatsapp:+1..."
+        outcome = self.lifeline.acknowledge_by_reply(sender, params.get("Body", ""))
         reply = SMS_REPLIES[outcome.result]
         self._send(HTTPStatus.OK, f"<Response><Message>{reply}</Message></Response>".encode(), "application/xml")
 
@@ -374,9 +375,14 @@ def build_notifier() -> Notifier:
     kind = os.environ.get("LIFELINE_NOTIFIER", "console")
     if kind == "console":
         return ConsoleNotifier()
+    if kind == "ntfy":
+        try:
+            return NtfyNotifier(os.environ.get("NTFY_TOPIC", ""), os.environ.get("NTFY_SERVER", "https://ntfy.sh"))
+        except ValueError as error:
+            raise SystemExit(f"NTFY_TOPIC: {error}")
     if kind == "twilio":
         return TwilioNotifier(os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"], os.environ["TWILIO_FROM"])
-    raise SystemExit(f"LIFELINE_NOTIFIER must be 'console' or 'twilio', got {kind!r}")
+    raise SystemExit(f"LIFELINE_NOTIFIER must be 'console', 'ntfy' or 'twilio', got {kind!r}")
 
 
 def load_dotenv(path: Path) -> None:
