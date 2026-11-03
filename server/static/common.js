@@ -85,6 +85,11 @@ export function stateOf(unit) {
   return "quiet";
 }
 
+// Storm Watch hazards, phrased the same way on the board and the family page.
+export function hazardText(hazard) {
+  return `${hazard.headline} until ${new Date(hazard.ends).toLocaleTimeString([], { weekday: "short", hour: "numeric", minute: "2-digit" })}`;
+}
+
 export function dateTime(iso) {
   return new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
 }

@@ -1,4 +1,4 @@
-import { api, el, clockTime, listNames, minutesSince, plural, stateOf, withButton } from "./common.js";
+import { api, el, clockTime, hazardText, listNames, minutesSince, plural, stateOf, withButton } from "./common.js";
 
 const shareToken = location.pathname.split("/").pop();
 const section = document.getElementById("status");
@@ -63,6 +63,15 @@ function respondButton() {
   return button;
 }
 
+function stormNote(unit) {
+  if (!unit.hazards.length) return null;
+  const advice = unit.status === "outage" ? "" : " Charge backup batteries and check supplies now. If the power goes out, we'll alert the call list right away.";
+  return el("div", { class: "storm-note" },
+    el("h2", {}, "Storm watch"),
+    unit.hazards.map((hazard) => el("p", {}, el("strong", {}, hazardText(hazard)), ".")),
+    advice ? el("p", {}, advice.trim()) : null);
+}
+
 let lastStatus = "";
 
 function render(unit) {
@@ -83,6 +92,7 @@ function render(unit) {
     ),
     whoKnows(unit),
     state === "out" ? respondButton() : null,
+    stormNote(unit),
   ].filter(Boolean));
   section.className = `is-${state}`;
   section.hidden = false;

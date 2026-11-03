@@ -34,6 +34,7 @@
 <main>
   <section class="board" id="view-board" aria-label="Live board">
     <div class="triage">
+      <div class="storm-banner" id="storm-banner" hidden></div>
       <div class="headline" id="headline"><h1>Loading…</h1></div>
       <p class="visually-hidden" id="announce" aria-live="polite"></p>
       <div id="units"></div>
@@ -56,7 +57,7 @@
     <div class="page-head">
       <div>
         <h1>Outage history</h1>
-        <p class="muted">Every power outage and silent unit: who we alerted, and how fast someone responded.</p>
+        <p class="muted">Every power outage, silent unit and storm notice: who we alerted, and how fast someone responded.</p>
       </div>
       <div class="page-actions">
         <label class="inline-field" for="history-days">Period

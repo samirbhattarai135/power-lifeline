@@ -1,4 +1,4 @@
-import { ApiError, api, el, clockTime, dateTime, durationText, listNames, minutesSince, plural, secondsAgo, stateOf, uptimeText, withButton } from "./common.js";
+import { ApiError, api, el, clockTime, dateTime, durationText, hazardText, listNames, minutesSince, plural, secondsAgo, stateOf, uptimeText, withButton } from "./common.js";
 
 const BOARD_REFRESH_MS = 2000;
 const MAP_CENTER = [31.3, -89.31]; // Pine Belt, Mississippi
@@ -48,9 +48,14 @@ window.addEventListener("hashchange", showView);
 
 // ---- live board ----------------------------------------------------------------
 
-const map = L.map("map", { zoomControl: true }).setView(MAP_CENTER, 11);
-L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution: "© OpenStreetMap contributors" }).addTo(map);
+// Zoomed out enough to see weather coming, not just the streets around each home.
+const REGIONAL_ZOOM = 9;
+const map = L.map("map", { zoomControl: true }).setView(MAP_CENTER, REGIONAL_ZOOM);
+let mapFitted = false;
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+  { attribution: "© OpenStreetMap contributors", className: "basemap-tiles" }).addTo(map);
 const markers = new Map();
+const tempLabels = new Map();
 const tokens = getComputedStyle(document.documentElement);
 const markerColor = Object.fromEntries(
   [["out", "--color-out"], ["acked", "--color-acked"], ["on", "--color-on"], ["quiet", "--color-quiet"]]
@@ -72,6 +77,28 @@ function headline(units) {
       el("p", {}, waiting.length ? `${waiting.length} waiting for someone to respond. ${responding ? `${responding} being handled.` : ""}`
                                  : "Someone is responding to each one."));
   }
+}
+
+// One line per hazard, naming the patients in its path; high risk first (the server sorts each unit's list).
+function stormBanner(units) {
+  const byHazard = new Map();
+  for (const unit of units) {
+    for (const hazard of unit.hazards) {
+      const key = `${hazard.level}|${hazardText(hazard)}`;
+      if (!byHazard.has(key)) byHazard.set(key, { hazard, names: [] });
+      byHazard.get(key).names.push(unit.name);
+    }
+  }
+  const node = document.getElementById("storm-banner");
+  node.hidden = byHazard.size === 0;
+  if (!byHazard.size) return;
+  const lines = [...byHazard.values()].sort((a, b) => (a.hazard.level === "high" ? -1 : 1) - (b.hazard.level === "high" ? -1 : 1));
+  node.replaceChildren(
+    el("h2", {}, "Storm watch"),
+    el("ul", {}, lines.map(({ hazard, names }) => el("li", { class: `is-${hazard.level}` },
+      el("strong", {}, hazardText(hazard)), `: ${listNames(names)}`))),
+    el("p", { class: "muted" }, "High-risk warnings have been sent to each patient's first contact. Check backups now, most critical first."),
+  );
 }
 
 // Screen readers hear the headline only when it changes, not on every poll.
@@ -105,6 +132,9 @@ function unitRow(unit) {
   } else {
     lines.push(el("p", { class: "muted" }, `Last report ${secondsAgo(unit.last_seen)}${unit.battery_percent == null ? "" : `, unit battery ${unit.battery_percent}%`}.`));
   }
+  for (const hazard of unit.hazards) {
+    lines.push(el("p", { class: "unit-hazard" }, el("span", { class: "tag tag-storm" }, "Storm watch"), ` ${hazardText(hazard)}`));
+  }
   return el("article", { class: `unit is-${state}` }, lines);
 }
 
@@ -123,7 +153,109 @@ function placeMarker(unit) {
     marker = L.circleMarker([unit.lat, unit.lon], style).addTo(map);
     markers.set(unit.device_id, marker);
   }
-  marker.setLatLng([unit.lat, unit.lon]).setStyle(style).setRadius(style.radius).bindTooltip(`${unit.name}: ${STATE_LABEL[state]}`);
+  // A DOM node, not an HTML string: patient names are typed by staff.
+  const tip = el("div", { class: "map-tip" }, el("strong", {}, unit.name), el("div", {}, STATE_LABEL[state]),
+    unit.conditions ? el("div", {}, conditionsText(unit.conditions)) : null,
+    ...unit.hazards.map((h) => el("div", { class: "map-tip-hazard" }, hazardText(h))));
+  marker.setLatLng([unit.lat, unit.lon]).setStyle(style).setRadius(style.radius).bindTooltip(tip);
+}
+
+// ---- weather on the map ------------------------------------------------------------
+
+const WEATHER_REFRESH_MS = 60000;
+const RADAR_REFRESH_MS = 5 * 60000;
+// Colours close to the National Weather Service hazard map, so they read like any weather map.
+const WARNING_COLORS = {
+  "Tornado Warning": "#ff0000", "Severe Thunderstorm Warning": "#ffa500", "Extreme Wind Warning": "#ff8c00",
+  "High Wind Warning": "#daa520", "Ice Storm Warning": "#8b008b", "Winter Storm Warning": "#ff69b4",
+  "Blizzard Warning": "#ff4500", "Hurricane Warning": "#dc143c", "Tropical Storm Warning": "#b22222",
+  "Extreme Cold Warning": "#0000ff", "Extreme Heat Warning": "#c71585", "Excessive Heat Warning": "#c71585",
+  "Tornado Watch": "#c9b400", "Severe Thunderstorm Watch": "#db7093", "Hurricane Watch": "#ff00ff",
+  "Tropical Storm Watch": "#f08080", "Winter Storm Watch": "#4682b4", "High Wind Watch": "#b8860b",
+  "Wind Advisory": "#c19a6b", "Winter Weather Advisory": "#7b68ee", "Extreme Cold Watch": "#5f9ea0",
+};
+
+function warningColor(event) {
+  return WARNING_COLORS[event.replace(/ \(demo\)$/, "")] ?? "#d97706";
+}
+
+const radar = L.tileLayer.wms("https://opengeo.ncep.noaa.gov/geoserver/conus/conus_bref_qcd/ows", {
+  layers: "conus_bref_qcd", format: "image/png", transparent: true, opacity: 0.6,
+  attribution: "Weather: NOAA NWS",
+}).addTo(map);
+setInterval(() => radar.setParams({ refreshed: Date.now() }), RADAR_REFRESH_MS);
+
+const warningLayer = L.geoJSON(null, {
+  style: (feature) => {
+    const high = feature.properties.level === "high";
+    return { color: warningColor(feature.properties.event), weight: high ? 3 : 2, dashArray: high ? null : "6 5",
+             fillOpacity: high ? 0.16 : 0.07 };
+  },
+  onEachFeature: (feature, layer) => layer.bindTooltip(
+    el("div", { class: "map-tip" }, el("strong", {}, feature.properties.event), el("div", {}, `Until ${dateTime(feature.properties.ends)}`)),
+    { sticky: true }),
+}).addTo(map);
+
+L.control.layers(null, { "Weather radar": radar, "Warnings and watches": warningLayer },
+  { position: "topright", collapsed: matchMedia("(max-width: 640px)").matches }).addTo(map);
+
+const legend = L.control({ position: "bottomleft" });
+legend.onAdd = () => el("div", { class: "map-legend", id: "map-legend" });
+legend.addTo(map);
+
+function conditionsText(c) {
+  const parts = [];
+  if (c.temperature_f !== null) parts.push(`${c.temperature_f}°F`);
+  if (c.wind_mph !== null) parts.push(`wind ${c.wind_mph} mph${c.gust_mph ? `, gusts ${c.gust_mph}` : ""}`);
+  if (c.thunder_percent) parts.push(`${c.thunder_percent}% chance of thunder`);
+  return parts.join(", ");
+}
+
+const LABEL_MIN_GAP_PX = 44;
+
+// One temperature label per spot on screen: homes close together share the first label,
+// and every home's full conditions stay in its hover tooltip.
+function placeTemperatures(units) {
+  for (const label of tempLabels.values()) label.remove();
+  tempLabels.clear();
+  const placed = [];
+  for (const unit of units) {
+    const temperature = unit.conditions?.temperature_f;
+    if (temperature === null || temperature === undefined) continue;
+    const point = map.latLngToContainerPoint([unit.lat, unit.lon]);
+    if (placed.some((other) => other.distanceTo(point) < LABEL_MIN_GAP_PX)) continue;
+    placed.push(point);
+    const icon = L.divIcon({ className: "temp-label", html: `${Number(temperature)}°`, iconSize: null, iconAnchor: [-12, 9] });
+    tempLabels.set(unit.device_id, L.marker([unit.lat, unit.lon], { icon, interactive: false, keyboard: false }).addTo(map));
+  }
+}
+map.on("zoomend", () => placeTemperatures(lastUnits));
+
+function renderLegend(weather) {
+  const events = [...new Map(weather.areas.features.map((f) => [f.properties.event, f.properties.level])).entries()];
+  const node = document.getElementById("map-legend");
+  const swatch = (color, dashed) => el("span", { class: `swatch${dashed ? " is-dashed" : ""}`, style: `--swatch: ${color}` });
+  node.replaceChildren(
+    el("strong", {}, weather.mode === "demo" ? "Weather (demo storm)" : "Weather"),
+    el("div", { class: "legend-row legend-extra" }, el("span", { class: "radar-scale", "aria-hidden": "true" }), "Radar: light to heavy"),
+    ...(weather.mode === "off" ? [el("div", { class: "muted" }, "Storm Watch is off")]
+      : events.length ? events.map(([event, level]) => el("div", { class: "legend-row" }, swatch(warningColor(event), level !== "high"), event))
+      : [el("div", { class: "muted" }, "No warnings or watches near your homes")]),
+    weather.checked_at ? el("div", { class: "muted legend-extra" }, `Checked ${secondsAgo(weather.checked_at)}`) : null,
+  );
+}
+
+async function refreshWeather() {
+  try {
+    const weather = await guarded(api("GET", "/api/weather-map"));
+    warningLayer.clearLayers();
+    warningLayer.addData(weather.areas);
+    renderLegend(weather);
+  } catch (error) {
+    if (!(error instanceof ApiError && error.status === 401)) {
+      document.getElementById("map-legend").replaceChildren(el("strong", {}, "Weather"), el("div", { class: "muted" }, "Weather unavailable, retrying"));
+    }
+  }
 }
 
 function dropStaleMarkers(units) {
@@ -144,10 +276,17 @@ async function refreshBoard() {
     lastUnits = units;
     if (currentView() === "units") renderUnits();
     headline(units);
+    stormBanner(units);
     announce(document.querySelector("#headline h1").textContent);
     document.getElementById("units").replaceChildren(...units.map(unitRow));
     units.forEach(placeMarker);
     dropStaleMarkers(units);
+    placeTemperatures(units);
+    if (!mapFitted && units.length) {
+      // Once, on first load: every home in view with room around it, then the user is in charge.
+      map.fitBounds(L.latLngBounds(units.map((u) => [u.lat, u.lon])).pad(1.5), { maxZoom: REGIONAL_ZOOM });
+      mapFitted = true;
+    }
   } catch (error) {
     lastBoard = "";  // force a full redraw once the server answers again
     if (!(error instanceof ApiError && error.status === 401)) {
@@ -196,7 +335,8 @@ const historyDays = document.getElementById("history-days");
 historyDays.addEventListener("change", loadHistory);
 document.getElementById("history-print").addEventListener("click", () => window.print());
 
-const KIND_LABEL = { power: "Power outage", silent: "Unit silent" };
+const KIND_LABEL = { power: "Power outage", silent: "Unit silent", storm: "Storm notice" };
+const KIND_TAG = { power: "tag-out", silent: "", storm: "tag-storm" };
 
 async function loadHistory() {
   const days = historyDays.value;
@@ -225,14 +365,16 @@ async function loadHistory() {
 
 function historySummary(incidents, period) {
   const outages = incidents.filter((i) => i.kind === "power");
-  const silent = incidents.length - outages.length;
-  const silentNote = silent ? ` ${plural(silent, "unit")} went silent.` : "";
+  const silent = incidents.filter((i) => i.kind === "silent").length;
+  const storms = incidents.filter((i) => i.kind === "storm").length;
+  const silentNote = (silent ? ` ${plural(silent, "unit")} went silent.` : "") +
+    (storms ? ` ${plural(storms, "storm notice")} sent ahead of bad weather.` : "");
   if (!outages.length) return `No power outages in the ${period}.${silentNote}`;
   const answered = outages.filter((i) => i.response_minutes !== null).map((i) => i.response_minutes).sort((a, b) => a - b);
   const median = answered.length ? answered[Math.floor((answered.length - 1) / 2)] : null;
   const response = answered.length
     ? `Someone responded to ${answered.length} of ${outages.length}, with a typical response time of ${durationText(median)}.`
-    : "Nobody acknowledged any of them.";
+    : "None acknowledged yet.";
   return `${plural(outages.length, "power outage")} in the ${period}. ${response}${silentNote}`;
 }
 
@@ -242,8 +384,8 @@ function historyRow(incident) {
     el("td", { class: "num", "data-label": "Started" }, dateTime(incident.started_at)),
     el("td", { "data-label": "Patient" }, el("strong", {}, incident.patient_name), el("div", { class: "muted code" }, incident.device_id)),
     el("td", { "data-label": "What happened" },
-      el("span", { class: `tag ${incident.kind === "power" ? "tag-out" : ""}` }, KIND_LABEL[incident.kind]),
-      el("div", { class: "muted" }, incident.equipment)),
+      el("span", { class: `tag ${KIND_TAG[incident.kind]}` }, KIND_LABEL[incident.kind]),
+      el("div", { class: "muted" }, incident.kind === "storm" ? incident.detail : incident.equipment)),
     el("td", { class: "num", "data-label": "Lasted" },
       ongoing ? el("span", { class: "tag tag-ongoing" }, "Ongoing") : durationText(incident.duration_minutes)),
     el("td", { class: "cell-wide", "data-label": "Alerted" },
@@ -252,7 +394,7 @@ function historyRow(incident) {
 }
 
 function responseText(incident) {
-  if (incident.kind === "silent") return el("span", { class: "muted" }, "Not needed");
+  if (incident.kind !== "power") return el("span", { class: "muted" }, "Not needed");
   if (incident.acknowledged_by) return `${incident.acknowledged_by} after ${durationText(incident.response_minutes)}`;
   if (incident.ended_at === null) return "Waiting";
   return el("span", { class: "no-response" }, "No one responded");
@@ -433,9 +575,9 @@ function recentIncidentsBlock(patient) {
     .then(({ incidents }) => {
       list.replaceChildren(...(incidents.length
         ? incidents.slice(0, 10).map((i) => el("li", {},
-            el("strong", {}, `${KIND_LABEL[i.kind]}, ${dateTime(i.started_at)}`),
+            el("strong", {}, `${i.kind === "storm" ? i.detail : KIND_LABEL[i.kind]}, ${dateTime(i.started_at)}`),
             el("span", {}, [i.ended_at === null ? "Still going." : `Lasted ${durationText(i.duration_minutes)}.`,
-                            i.kind === "power" ? (i.acknowledged_by ? ` ${i.acknowledged_by} responded after ${durationText(i.response_minutes)}.` : " Nobody acknowledged it.") : ""].join(""))))
+                            i.kind === "storm" ? " Storm notice sent to the first contact." : i.kind === "power" ? (i.acknowledged_by ? ` ${i.acknowledged_by} responded after ${durationText(i.response_minutes)}.` : " Nobody acknowledged it.") : ""].join(""))))
         : [el("li", { class: "muted" }, "No outages in the last 90 days.")]));
     })
     .catch((error) => list.replaceChildren(el("li", { class: "form-error" }, error.message)));
@@ -482,3 +624,5 @@ function showCredentials(patient, title) {
 showView();
 refreshBoard();
 setInterval(refreshBoard, BOARD_REFRESH_MS);
+refreshWeather();
+setInterval(refreshWeather, WEATHER_REFRESH_MS);
