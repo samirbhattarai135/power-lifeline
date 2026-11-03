@@ -4,3 +4,4 @@ server/.env
 server/.patients-*
 __pycache__/
 .env
+firmware/lifeline/build/

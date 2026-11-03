@@ -8,7 +8,7 @@
 const uint32_t DEBOUNCE_MS       = 2000;   // ignore brownout flicker shorter than this
 const uint32_t HEARTBEAT_MS      = 30000;  // server marks a unit offline after ~90 s of silence
 const uint32_t RETRY_MS          = 3000;   // retry a failed state-change report this often
-const uint32_t WIFI_RETRY_MS     = 10000;
+const uint32_t WIFI_RETRY_MS     = 30000;  // phone hotspots can take >10 s to finish a handshake
 
 bool stableWallPower   = true;   // debounced reading
 bool lastRawWallPower  = true;
@@ -31,11 +31,18 @@ int readBatteryPercent() {
 }
 
 void ensureWifi() {
-  if (WiFi.status() == WL_CONNECTED) return;
+  static bool announced = false;
+  if (WiFi.status() == WL_CONNECTED) {
+    if (!announced) Serial.printf("WiFi: connected, IP %s\n", WiFi.localIP().toString().c_str());
+    announced = true;
+    return;
+  }
+  announced = false;
   uint32_t now = millis();
   if (lastWifiTryAt != 0 && now - lastWifiTryAt < WIFI_RETRY_MS) return;
   lastWifiTryAt = now;
-  Serial.println("WiFi: connecting...");
+  // Status 1 = network not found (often 5 GHz only), 4 = connect failed (often wrong password).
+  Serial.printf("WiFi: connecting... (last status %d)\n", WiFi.status());
   WiFi.disconnect();
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 }
@@ -71,6 +78,10 @@ void setup() {
   pinMode(STATUS_LED_PIN, OUTPUT);
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
+  // 201 = network not found (often 5 GHz only), 15 or 202 = usually a wrong password.
+  WiFi.onEvent([](WiFiEvent_t, WiFiEventInfo_t info) {
+    Serial.printf("WiFi: dropped, reason %d\n", info.wifi_sta_disconnected.reason);
+  }, ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
 
   stableWallPower = lastRawWallPower = readWallPower();
   rawChangedAt = millis();

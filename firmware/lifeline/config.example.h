@@ -14,8 +14,9 @@
 // GPIO reading the 5 V wall-sense adapter through a 10k/20k divider (input-only pins 34-39 are fine).
 #define WALL_SENSE_PIN 34
 
-// Optional: LiPo/18650 voltage through a 100k/100k divider. Set to -1 if not wired.
-#define BATTERY_ADC_PIN 35
+// Optional: LiPo/18650 voltage through a 100k/100k divider on GPIO35. -1 = not wired
+// (demo build runs from laptop USB, so there is no battery to read).
+#define BATTERY_ADC_PIN -1
 // Calibration knob: multiply measured pin voltage by this to get battery voltage.
 // 2.0 for an equal divider; tweak against a multimeter reading.
 #define BATTERY_DIVIDER_RATIO 2.0f
