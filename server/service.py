@@ -11,12 +11,13 @@ import secrets
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
 from domain import REPLY_SUFFIX, InvalidPatient, Monitor, Notification, Outage, Patient, ReplyOutcome, UnitHealth, UnknownDevice
 from records import patient_from_form
+from storm import StormWatch, WeatherReport, WeatherSource, WeatherUnavailable, nearby_outage_hazard
 
 log = logging.getLogger("lifeline.service")
 
@@ -54,11 +55,17 @@ SAVE_BACKOFF_SECONDS = 1.0
 
 
 class Lifeline:
-    def __init__(self, monitor: Monitor, store: PatientStore, notifier: Notifier, outages: OutageStore):
+    def __init__(self, monitor: Monitor, store: PatientStore, notifier: Notifier, outages: OutageStore,
+                 storm: StormWatch | None = None, weather: WeatherSource | None = None):
+        """Pass `storm` and `weather` together to turn Storm Watch on."""
         self._monitor = monitor
         self._store = store
         self._notifier = notifier
         self._outages = outages
+        self._storm = storm
+        self._weather_source = weather
+        self._weather: dict[str, WeatherReport] = {}  # device_id -> last report, kept if a fetch fails
+        self._weather_checked_at: datetime | None = None
         # ponytail: one lock for every unit; fine for hundreds of patients, shard per unit if it grows.
         self._lock = threading.Lock()
         # Serialises roster edits (which do slow store I/O) without blocking device reports.
@@ -82,10 +89,70 @@ class Lifeline:
         self._dispatch(notifications)
 
     def tick(self) -> None:
+        now = utc_now()
         with self._lock:
-            notifications = self._monitor.tick(utc_now())
+            notifications = self._monitor.tick(now)
             self._save(self._monitor.drain_changes())
+            notifications += self._update_storm_watch(now)
         self._dispatch(notifications)
+
+    # ---- storm watch ---------------------------------------------------------
+
+    def refresh_weather(self) -> None:
+        """Fetch a weather report for every home. Slow network I/O, so never under the lock;
+        tick() combines the hazards with nearby outages and decides who to tell."""
+        if self._weather_source is None:
+            return
+        with self._lock:
+            homes = [(p.device_id, p.lat, p.lon) for p in self._monitor.patients()]
+        fetched = {}
+        for device_id, lat, lon in homes:
+            try:
+                fetched[device_id] = self._weather_source.report_at(lat, lon, utc_now())
+            except WeatherUnavailable as error:
+                log.warning("storm watch: no weather for %s this round: %s", device_id, error)
+        with self._lock:
+            self._weather.update(fetched)
+            if fetched:
+                self._weather_checked_at = utc_now()
+
+    def weather_map(self) -> dict:
+        """Active warning and watch outlines near the homes, as GeoJSON, plus when we last looked."""
+        now = utc_now()
+        with self._lock:
+            areas = {area.id: area for report in self._weather.values() for area in report.areas if area.ends > now}
+            checked_at = self._weather_checked_at
+        return {
+            "checked_at": checked_at.isoformat() if checked_at else None,
+            "areas": {"type": "FeatureCollection", "features": [
+                {"type": "Feature", "geometry": area.geometry,
+                 "properties": {"event": area.event, "level": area.level.value, "ends": area.ends.isoformat()}}
+                for area in sorted(areas.values(), key=lambda a: a.level.value)  # "elevated" first, so warnings draw on top
+            ]},
+        }
+
+    def _update_storm_watch(self, now: datetime) -> list[Notification]:
+        """Call with self._lock held."""
+        if self._storm is None:
+            return []
+        board = self._monitor.snapshot(now)
+        notifications = []
+        # ponytail: every home against every home each second; fine for hundreds, index by area beyond that.
+        for patient in self._monitor.patients():
+            report = self._weather.get(patient.device_id)
+            hazards = list(report.hazards) if report else []
+            nearby = nearby_outage_hazard(patient.device_id, board, now)
+            if nearby is not None:
+                hazards.append(nearby)
+            notifications += self._storm.update(patient, hazards, now)
+        self._save(self._storm.drain_changes())
+        return notifications
+
+    def _hazard_rows(self, device_id: str) -> list[dict]:
+        if self._storm is None:
+            return []
+        return [{"level": h.level.value, "headline": h.headline, "starts": h.starts.isoformat(), "ends": h.ends.isoformat()}
+                for h in self._storm.hazards(device_id)]
 
     # ---- acknowledgments ----------------------------------------------------
 
@@ -110,10 +177,12 @@ class Lifeline:
             if device_id is None:
                 return None
             row = self._monitor.status(device_id, utc_now())
+            hazards = self._hazard_rows(device_id)
         status = {key: row[key] for key in (
             "name", "equipment", "status", "backup_minutes", "backup_minutes_left",
             "outage_started", "contacts_alerted", "last_seen",
         )}
+        status["hazards"] = hazards
         status["acknowledged_by"] = _responder_for_family(row["acknowledged_by"])
         return status
 
@@ -130,7 +199,12 @@ class Lifeline:
 
     def snapshot(self) -> list[dict]:
         with self._lock:
-            return self._monitor.snapshot(utc_now())
+            rows = self._monitor.snapshot(utc_now())
+            for row in rows:
+                row["hazards"] = self._hazard_rows(row["device_id"])
+                report = self._weather.get(row["device_id"])
+                row["conditions"] = asdict(report.conditions) if report and report.conditions else None
+            return rows
 
     def history(self, days: int, device_id: str | None = None) -> list[Outage]:
         """Incidents that started in the last `days` days, newest first."""
@@ -187,6 +261,10 @@ class Lifeline:
             with self._lock:
                 self._monitor.remove_patient(device_id)
                 self._share_index.pop(existing.share_token, None)
+                self._weather.pop(device_id, None)
+                if self._storm is not None:
+                    self._storm.forget(device_id, utc_now())
+                    self._save(self._storm.drain_changes())
 
     # ---- internals --------------------------------------------------------
 

@@ -21,6 +21,9 @@ from records import outage_from_record, outage_to_record, patient_from_form, pat
 import service
 from service import DuplicateDevice, Lifeline
 from staff import LoginThrottle, Sessions, StaffMember
+from storm import (Conditions, ForecastPeriod, Hazard, RiskLevel, StormWatch, WarningArea, WeatherReport, WeatherUnavailable,
+                   alert_hazard, assess_forecast, nearby_outage_hazard)
+from weather import DemoWeather, areas_from_alerts, conditions_from_grid, hazards_from_alerts, hazards_from_grid, parse_duration
 from supabase_backend import SupabaseAuthenticator, SupabaseClient, SupabaseError, SupabaseOutageStore, SupabasePatientStore
 
 T0 = datetime(2026, 11, 2, 3, 0, tzinfo=timezone.utc)
@@ -225,6 +228,161 @@ class History(unittest.TestCase):
         m.report("unit-01", True, 90, T0, UnitHealth(-61, "0.2.0", 3600))
         row = m.status("unit-01", T0)
         self.assertEqual((row["rssi"], row["firmware"], row["uptime_s"]), (-61, "0.2.0", 3600))
+
+
+CENTRAL = timezone(timedelta(hours=-6))
+
+
+def hourly(values, start=T0):
+    return [ForecastPeriod(start + timedelta(hours=n), timedelta(hours=1), v) for n, v in enumerate(values)]
+
+
+def a_hazard(level=RiskLevel.HIGH, hazard_id="alert:1", ends=T0 + timedelta(hours=3)):
+    return Hazard(hazard_id, level, "Ice Storm Warning", T0, ends)
+
+
+class StormSignals(unittest.TestCase):
+    def test_only_power_threatening_alerts_count(self):
+        self.assertEqual(alert_hazard("a", "Tornado Warning", T0, T0).level, RiskLevel.HIGH)
+        self.assertEqual(alert_hazard("a", "Wind Advisory", T0, T0).level, RiskLevel.ELEVATED)
+        self.assertIsNone(alert_hazard("a", "Small Craft Advisory", T0, T0))
+
+    def test_gust_thresholds(self):
+        self.assertEqual(assess_forecast(hourly([30, 60]), [], T0), [])                      # 37 mph: nothing
+        (elevated,) = assess_forecast(hourly([30, 70]), [], T0)                              # 43 mph
+        self.assertEqual((elevated.level, elevated.headline), (RiskLevel.ELEVATED, "Gusts up to 43 mph forecast"))
+        (high,) = assess_forecast(hourly([100]), [], T0)                                     # 62 mph
+        self.assertEqual(high.level, RiskLevel.HIGH)
+        self.assertEqual(assess_forecast(hourly([100], start=T0 - timedelta(hours=3)), [], T0), [])  # already over
+        self.assertEqual(assess_forecast(hourly([100], start=T0 + timedelta(hours=30)), [], T0), [])  # beyond 24 h
+
+    def test_ice_adds_up_over_the_day(self):
+        (ice,) = assess_forecast([], hourly([2, 2.5, 2]), T0)  # 6.5 mm is just over a quarter inch
+        self.assertEqual((ice.level, ice.headline), (RiskLevel.HIGH, "About 0.26 in of ice forecast"))
+        self.assertEqual(assess_forecast([], hourly([2, 2]), T0), [])
+
+    def test_nws_parsing(self):
+        self.assertEqual(parse_duration("P1DT6H"), timedelta(days=1, hours=6))
+        alerts = {"features": [
+            {"properties": {"id": "urn:1", "event": "Ice Storm Warning", "onset": "2026-11-02T12:00:00-06:00",
+                            "ends": "2026-11-03T06:00:00-06:00"}},
+            {"properties": {"id": "urn:2", "event": "Flood Warning", "onset": "2026-11-02T12:00:00-06:00",
+                            "ends": "2026-11-03T06:00:00-06:00"}},
+        ]}
+        self.assertEqual([h.id for h in hazards_from_alerts(alerts)], ["alert:urn:1"])
+        grid = {"properties": {
+            "windGust": {"uom": "wmoUnit:km_h-1", "values": [{"validTime": "2026-11-02T04:00:00+00:00/PT2H", "value": 100}]},
+            "iceAccumulation": {"uom": "wmoUnit:in", "values": [{"validTime": "2026-11-02T04:00:00+00:00/PT1H", "value": 9}]},
+        }}
+        self.assertEqual([h.headline for h in hazards_from_grid(grid, T0)], ["Gusts up to 62 mph forecast"])  # odd unit skipped
+
+    def test_conditions_now_from_the_grid(self):
+        grid = {"properties": {
+            "temperature": {"uom": "wmoUnit:degC", "values": [{"validTime": "2026-11-02T02:00:00+00:00/PT2H", "value": 20}]},
+            "windSpeed": {"uom": "wmoUnit:km_h-1", "values": [{"validTime": "2026-11-02T03:00:00+00:00/PT1H", "value": 16.1}]},
+            "windGust": {"uom": "wmoUnit:km_h-1", "values": [{"validTime": "2026-11-02T04:00:00+00:00/PT1H", "value": 50}]},
+            "probabilityOfThunder": {"values": [{"validTime": "2026-11-02T00:00:00+00:00/PT6H", "value": 30}]},
+        }}
+        self.assertEqual(conditions_from_grid(grid, T0), Conditions(temperature_f=68, wind_mph=10, gust_mph=None, thunder_percent=30))
+
+    def test_warning_outlines_come_from_the_alert_or_its_zones(self):
+        square = {"type": "Polygon", "coordinates": [[[-89, 31], [-88, 31], [-88, 32], [-89, 31]]]}
+        times = {"onset": "2026-11-02T12:00:00-06:00", "ends": "2026-11-03T06:00:00-06:00"}
+        alerts = {"features": [
+            {"geometry": square, "properties": {"id": "urn:1", "event": "Tornado Warning", **times}},
+            {"geometry": None, "properties": {"id": "urn:2", "event": "Wind Advisory", **times,
+                                              "affectedZones": ["https://api.weather.gov/zones/forecast/MSZ074", "missing"]}},
+            {"geometry": square, "properties": {"id": "urn:3", "event": "Flood Warning", **times}},
+        ]}
+        zones = {"https://api.weather.gov/zones/forecast/MSZ074": square}
+        tornado, wind = areas_from_alerts(alerts, zones.get)
+        self.assertEqual((tornado.event, tornado.level, tornado.geometry), ("Tornado Warning", RiskLevel.HIGH, square))
+        self.assertEqual((wind.level, wind.geometry["type"], len(wind.geometry["coordinates"])),
+                         (RiskLevel.ELEVATED, "MultiPolygon", 1))
+
+    def test_outages_spreading_nearby(self):
+        def row(device_id, lat, status="ok", started=None):
+            return {"device_id": device_id, "lat": lat, "lon": -89.29, "status": status,
+                    "outage_started": started.isoformat() if started else None}
+        board = [row("unit-01", 31.30), row("unit-02", 31.31, "outage", T0), row("unit-03", 31.32, "outage", T0),
+                 row("unit-04", 32.30, "outage", T0)]  # unit-04 is about 110 km away
+        hazard = nearby_outage_hazard("unit-01", board, T0 + timedelta(minutes=5))
+        self.assertEqual(hazard.headline, "Power is out at 2 other Lifeline homes within 3 miles")
+        self.assertIsNone(nearby_outage_hazard("unit-02", board, T0))  # already out: the outage alert covers it
+        self.assertIsNone(nearby_outage_hazard("unit-01", board[:2], T0))  # one neighbour is not a pattern
+        self.assertIsNone(nearby_outage_hazard("unit-01", board, T0 + timedelta(hours=2)))  # old news
+
+
+class StormNotices(unittest.TestCase):
+    def test_high_hazard_is_announced_once_to_first_contact(self):
+        watch = StormWatch(CENTRAL, new_id=lambda: "storm-1")
+        (sent,) = watch.update(a_patient(), [a_hazard()], T0)
+        self.assertEqual(sent.contact.name, "Daughter")
+        self.assertIn("Ice Storm Warning for Ruth's area until 12:00 AM", sent.message)
+        self.assertIn("backup is about 60 min", sent.message)
+        self.assertEqual(watch.update(a_patient(), [a_hazard()], T0 + timedelta(minutes=5)), [])
+        (notice,) = watch.drain_changes()
+        self.assertEqual((notice.detail, notice.hazard_id, notice.ended_at), ("Ice Storm Warning", "alert:1", None))
+
+    def test_elevated_is_shown_not_sent_and_clearing_closes_the_notice(self):
+        watch = StormWatch(CENTRAL)
+        self.assertEqual(watch.update(a_patient(), [a_hazard(RiskLevel.ELEVATED)], T0), [])
+        self.assertEqual([h.level for h in watch.hazards("unit-01")], [RiskLevel.ELEVATED])
+        watch.update(a_patient(), [a_hazard()], T0)
+        watch.update(a_patient(), [], T0 + timedelta(hours=1))
+        self.assertEqual(watch.drain_changes()[-1].ended_at, T0 + timedelta(hours=1))
+        self.assertEqual(watch.hazards("unit-01"), [])
+
+    def test_demo_storm_survives_a_restart_the_same_day(self):
+        first = DemoWeather(started=T0).report_at(31.3, -89.3, T0).hazards[0]
+        again = DemoWeather(started=T0 + timedelta(minutes=5)).report_at(31.3, -89.3, T0).hazards[0]
+        self.assertEqual(first.id, again.id)
+
+    def test_restart_does_not_announce_again(self):
+        before = StormWatch(CENTRAL)
+        before.update(a_patient(), [a_hazard()], T0)
+        saved = [outage_from_record(outage_to_record(n)) for n in before.drain_changes()]
+        after = StormWatch(CENTRAL, open_notices=saved)
+        self.assertEqual(after.update(a_patient(), [a_hazard()], T0 + timedelta(minutes=5)), [])
+
+
+class FakeWeather:
+    def __init__(self, hazards, areas=()):
+        self.hazards = hazards
+        self.areas = list(areas)
+
+    def report_at(self, lat, lon, now):
+        if self.hazards is None:
+            raise WeatherUnavailable("weather.gov down")
+        return WeatherReport(self.hazards, Conditions(temperature_f=31, gust_mph=45), self.areas)
+
+
+class StormWatchService(unittest.TestCase):
+    def test_refresh_then_tick_announces_saves_and_shows_on_board(self):
+        sent = []
+        notifier = type("Recorder", (), {"send": lambda self, n: sent.append(n)})()
+        outages = MemoryOutageStore()
+        ends = datetime.now(timezone.utc) + timedelta(hours=2)
+        expired = WarningArea("old", "Wind Advisory", RiskLevel.ELEVATED, datetime.now(timezone.utc), {"type": "Polygon"})
+        current = WarningArea("now", "Ice Storm Warning", RiskLevel.HIGH, ends, {"type": "Polygon"})
+        weather = FakeWeather([a_hazard(ends=ends)], [expired, current])
+        lifeline = Lifeline(make_monitor(), MemoryStore(a_patient()), notifier, outages, StormWatch(CENTRAL), weather)
+        lifeline.refresh_weather()
+        lifeline.tick()
+        lifeline.wait_for_saves()
+        lifeline._senders.shutdown(wait=True)
+        self.assertEqual([n.contact.name for n in sent], ["Daughter"])
+        (notice,) = outages.saved.values()
+        self.assertEqual(notice.kind, IncidentKind.STORM)
+        self.assertEqual(lifeline.snapshot()[0]["hazards"][0]["headline"], "Ice Storm Warning")
+        self.assertEqual(lifeline.family_status("s" * 20)["hazards"][0]["level"], "high")
+        self.assertEqual(lifeline.snapshot()[0]["conditions"]["temperature_f"], 31)
+        weather_map = lifeline.weather_map()
+        self.assertIsNotNone(weather_map["checked_at"])
+        self.assertEqual([f["properties"]["event"] for f in weather_map["areas"]["features"]], ["Ice Storm Warning"])
+        weather.hazards = None  # a failed fetch keeps the last known report instead of clearing it
+        lifeline.refresh_weather()
+        self.assertEqual(len(lifeline.snapshot()[0]["hazards"]), 1)
 
 
 class PatientValidation(unittest.TestCase):
@@ -455,7 +613,7 @@ class StaffOnlyRoutes(unittest.TestCase):
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
-        for path in ("/api/history", "/api/history.csv?days=7"):
+        for path in ("/api/history", "/api/history.csv?days=7", "/api/weather-map"):
             with self.subTest(path=path), self.assertRaises(urllib.error.HTTPError) as refused:
                 urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}{path}", timeout=5)
             self.assertEqual(refused.exception.code, 401)

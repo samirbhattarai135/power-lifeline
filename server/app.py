@@ -21,6 +21,7 @@ import re
 import threading
 import urllib.parse
 from datetime import timedelta
+from zoneinfo import ZoneInfo
 from http import HTTPStatus
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -31,8 +32,10 @@ from domain import DEVICE_ID_PATTERN, IncidentKind, InvalidPatient, Monitor, Out
 from local import JsonFileOutageStore, JsonFilePatientStore, SharedPasswordAuthenticator
 from notifiers import WHATSAPP_PREFIX, ConsoleNotifier, NtfyNotifier, TwilioNotifier, is_valid_twilio_signature
 from records import patient_to_record
-from service import DuplicateDevice, Lifeline, Notifier, OutageStore, PatientStore
+from service import DuplicateDevice, Lifeline, Notifier, OutageStore, PatientStore, utc_now
 from staff import LoginThrottle, Sessions, StaffAuthenticator, StaffMember
+from storm import StormWatch, WeatherSource
+from weather import DemoWeather, NwsWeather
 from supabase_backend import SupabaseAuthenticator, SupabaseClient, SupabaseError, SupabaseOutageStore, SupabasePatientStore
 
 HERE = Path(__file__).parent
@@ -61,7 +64,7 @@ SECURITY_HEADERS = {
         "script-src 'self' https://unpkg.com; "
         "style-src 'self' https://unpkg.com https://fonts.googleapis.com; "
         "font-src https://fonts.gstatic.com; "
-        "img-src 'self' data: https://*.tile.openstreetmap.org https://unpkg.com; "
+        "img-src 'self' data: https://*.tile.openstreetmap.org https://unpkg.com https://opengeo.ncep.noaa.gov; "
         "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
     ),
 }
@@ -89,6 +92,8 @@ class Handler(BaseHTTPRequestHandler):
     throttle: LoginThrottle
     public_url: str
     twilio_auth_token: str | None
+    storm_mode: str = "off"            # on, off or demo; set by main()
+    storm_check_seconds: int = 300
     routes: list[Route]
 
     # ---- dispatch -----------------------------------------------------------
@@ -246,6 +251,10 @@ class Handler(BaseHTTPRequestHandler):
         self.lifeline.remove_patient(device_id)
         self._send_json(HTTPStatus.OK, {"ok": True})
 
+    def api_weather_map(self) -> None:
+        self._send_json(HTTPStatus.OK, {"mode": self.storm_mode, "check_every_seconds": self.storm_check_seconds,
+                                        **self.lifeline.weather_map()})
+
     def api_history(self) -> None:
         days, device_id = self._history_query()
         rows = [incident_view(i) for i in self.lifeline.history(days, device_id)]
@@ -381,6 +390,7 @@ Handler.routes = [
     Route("GET", r"/api/me", Handler.api_me, staff_only=True),
     Route("GET", r"/api/status", Handler.api_status, staff_only=True),
     Route("POST", r"/api/ack/([a-z0-9-]+)", Handler.api_staff_ack, staff_only=True),
+    Route("GET", r"/api/weather-map", Handler.api_weather_map, staff_only=True),
     Route("GET", r"/api/history", Handler.api_history, staff_only=True),
     Route("GET", r"/api/history\.csv", Handler.api_history_csv, staff_only=True),
     Route("GET", r"/api/patients", Handler.api_list_patients, staff_only=True),
@@ -431,6 +441,7 @@ def incident_view(incident: Outage) -> dict:
         "acknowledged_at": incident.acknowledged_at.isoformat() if incident.acknowledged_at else None,
         "response_minutes": _minutes_between(incident.started_at, incident.acknowledged_at),
         "alerted": [{"name": a.name, "role": a.role, "at": a.at.isoformat()} for a in incident.alerted],
+        "detail": incident.detail,
     }
 
 
@@ -448,7 +459,7 @@ def incidents_csv(incidents: list[Outage]) -> str:
             _utc_text(i.started_at),
             _utc_text(i.ended_at) if i.ended_at else "ongoing",
             _blank_if_none(_minutes_between(i.started_at, i.ended_at)),
-            "Power outage" if i.kind is IncidentKind.POWER else "Unit silent",
+            _incident_type(i),
             i.patient_name,
             i.device_id,
             i.equipment,
@@ -458,6 +469,14 @@ def incidents_csv(incidents: list[Outage]) -> str:
             _blank_if_none(_minutes_between(i.started_at, i.acknowledged_at)),
         )])
     return out.getvalue()
+
+
+def _incident_type(incident: Outage) -> str:
+    if incident.kind is IncidentKind.POWER:
+        return "Power outage"
+    if incident.kind is IncidentKind.SILENT:
+        return "Unit silent"
+    return f"Storm notice: {incident.detail}"
 
 
 def _blank_if_none(value: object) -> object:
@@ -528,6 +547,30 @@ def load_dotenv(path: Path) -> None:
             os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
+def build_storm_watch(open_incidents: list[Outage]) -> tuple[StormWatch | None, WeatherSource | None]:
+    """LIFELINE_STORM_WATCH: on (default, real NWS data), off, or demo (pretend ice storm)."""
+    mode = os.environ.get("LIFELINE_STORM_WATCH", "on")
+    if mode == "off":
+        return None, None
+    storm = StormWatch(ZoneInfo(os.environ.get("LIFELINE_TIMEZONE", "America/Chicago")), open_notices=open_incidents)
+    if mode == "demo":
+        return storm, DemoWeather(started=utc_now())
+    if mode != "on":
+        raise SystemExit(f"LIFELINE_STORM_WATCH must be 'on', 'off' or 'demo', got {mode!r}")
+    user_agent = os.environ.get("NWS_USER_AGENT", "Lifeline power-loss alerts (set NWS_USER_AGENT with a contact)")
+    return storm, NwsWeather(user_agent)
+
+
+def run_weather_checks(lifeline: Lifeline, stop: threading.Event, every_seconds: int) -> None:
+    while True:
+        try:
+            lifeline.refresh_weather()
+        except Exception:
+            log.exception("storm watch weather check failed")
+        if stop.wait(every_seconds):
+            return
+
+
 def run_ticker(lifeline: Lifeline, stop: threading.Event) -> None:
     while not stop.wait(1.0):
         try:
@@ -553,7 +596,8 @@ def main() -> None:
         status_link=lambda patient: family_link(public_url, patient),
         open_incidents=open_incidents,
     )
-    lifeline = Lifeline(monitor, store, build_notifier(), outages)
+    storm, weather = build_storm_watch(open_incidents)
+    lifeline = Lifeline(monitor, store, build_notifier(), outages, storm, weather)
 
     Handler.lifeline = lifeline
     Handler.authenticator = authenticator
@@ -568,9 +612,14 @@ def main() -> None:
 
     stop = threading.Event()
     threading.Thread(target=run_ticker, args=(lifeline, stop), daemon=True, name="ticker").start()
+    Handler.storm_mode = os.environ.get("LIFELINE_STORM_WATCH", "on")
+    Handler.storm_check_seconds = int(os.environ.get("STORM_CHECK_SECONDS", "300"))
+    if weather is not None:
+        every = Handler.storm_check_seconds
+        threading.Thread(target=run_weather_checks, args=(lifeline, stop, every), daemon=True, name="weather").start()
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
-    log.info("Lifeline on http://0.0.0.0:%d · storage: %s · %d patients · %d open incidents restored",
-             port, backend_name, len(monitor.patients()), len(open_incidents))
+    log.info("Lifeline on http://0.0.0.0:%d · storage: %s · %d patients · %d open incidents restored · storm watch %s",
+             port, backend_name, len(monitor.patients()), len(open_incidents), os.environ.get("LIFELINE_STORM_WATCH", "on"))
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -96,6 +96,7 @@ class Notification:
 class IncidentKind(Enum):
     POWER = "power"    # wall power lost at the patient's home
     SILENT = "silent"  # the unit stopped reporting: its Wi-Fi, or its own battery, may be down
+    STORM = "storm"    # a storm notice sent before any outage (see storm.py)
 
 
 @dataclass(frozen=True)
@@ -133,6 +134,8 @@ class Outage:
     acknowledged_at: datetime | None = None
     ended_at: datetime | None = None
     alerted: list[Alerted] = field(default_factory=list)
+    detail: str = ""     # storm notices: the warning, e.g. "Ice Storm Warning"
+    hazard_id: str = ""  # storm notices: which hazard, so a restart doesn't announce it again
 
     def is_escalating(self) -> bool:
         return self.acknowledged_by is None and self.next_escalation_at is not None
@@ -407,8 +410,9 @@ class Monitor:
             return  # patient removed since, or already over
         if incident.kind is IncidentKind.POWER:
             unit.outage = incident
-        else:
+        elif incident.kind is IncidentKind.SILENT:
             unit.silent = incident
+        # Storm notices belong to StormWatch, which restores its own.
 
     # ---- internals: read model ------------------------------------------------------
 
