@@ -5,6 +5,8 @@
 #include <HTTPClient.h>
 #include "config.h"
 
+const char *FIRMWARE_VERSION = "0.2.0";
+
 const uint32_t DEBOUNCE_MS       = 2000;   // ignore brownout flicker shorter than this
 const uint32_t HEARTBEAT_MS      = 30000;  // server marks a unit offline after ~90 s of silence
 const uint32_t RETRY_MS          = 3000;   // retry a failed state-change report this often
@@ -50,15 +52,15 @@ void ensureWifi() {
 bool sendReport(bool wallPower) {
   if (WiFi.status() != WL_CONNECTED) return false;
 
-  char body[160];
   int battery = readBatteryPercent();
-  if (battery >= 0) {
-    snprintf(body, sizeof(body), "{\"device_id\":\"%s\",\"wall_power\":%s,\"battery_percent\":%d}",
-             DEVICE_ID, wallPower ? "true" : "false", battery);
-  } else {
-    snprintf(body, sizeof(body), "{\"device_id\":\"%s\",\"wall_power\":%s}",
-             DEVICE_ID, wallPower ? "true" : "false");
-  }
+  char batteryField[28] = "";
+  if (battery >= 0) snprintf(batteryField, sizeof(batteryField), ",\"battery_percent\":%d", battery);
+  // rssi, fw and uptime_s feed the platform's unit health panel; the server ignores them if malformed.
+  char body[256];
+  snprintf(body, sizeof(body),
+           "{\"device_id\":\"%s\",\"wall_power\":%s%s,\"rssi\":%d,\"fw\":\"%s\",\"uptime_s\":%lu}",
+           DEVICE_ID, wallPower ? "true" : "false", batteryField, (int)WiFi.RSSI(), FIRMWARE_VERSION,
+           (unsigned long)(millis() / 1000));
 
   HTTPClient http;
   http.setTimeout(5000);
