@@ -287,6 +287,10 @@ class NtfyPush(unittest.TestCase):
         with self.assertRaises(ValueError):
             NtfyNotifier("lifeline")
 
+    def test_plain_http_server_is_rejected(self):
+        with self.assertRaises(ValueError):
+            NtfyNotifier("lifeline-0123456789abcdef", server="http://ntfy.example.com")
+
 class FakeSupabase(BaseHTTPRequestHandler):
     """Records requests and answers like PostgREST / GoTrue would."""
     requests: list = []

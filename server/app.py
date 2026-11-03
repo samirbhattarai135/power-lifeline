@@ -377,9 +377,10 @@ def build_notifier() -> Notifier:
         return ConsoleNotifier()
     if kind == "ntfy":
         try:
-            return NtfyNotifier(os.environ.get("NTFY_TOPIC", ""), os.environ.get("NTFY_SERVER", "https://ntfy.sh"))
+            return NtfyNotifier(os.environ.get("NTFY_TOPIC", ""), os.environ.get("NTFY_SERVER", "https://ntfy.sh"),
+                                os.environ.get("NTFY_TOKEN", ""))
         except ValueError as error:
-            raise SystemExit(f"NTFY_TOPIC: {error}")
+            raise SystemExit(f"ntfy: {error}")
     if kind == "twilio":
         return TwilioNotifier(os.environ["TWILIO_ACCOUNT_SID"], os.environ["TWILIO_AUTH_TOKEN"], os.environ["TWILIO_FROM"])
     raise SystemExit(f"LIFELINE_NOTIFIER must be 'console', 'ntfy' or 'twilio', got {kind!r}")

@@ -39,11 +39,17 @@ class NtfyNotifier:
 
     MIN_TOPIC_LENGTH = 16
 
-    def __init__(self, topic: str, server: str = "https://ntfy.sh"):
+    def __init__(self, topic: str, server: str = "https://ntfy.sh", access_token: str = ""):
         if len(topic) < self.MIN_TOPIC_LENGTH:
             raise ValueError(f"ntfy topic must be at least {self.MIN_TOPIC_LENGTH} random characters")
+        if not server.startswith("https://"):
+            raise ValueError("ntfy server must use https: alerts carry patient details and family links")
         self._topic = topic
         self._server = server.rstrip("/")
+        # Optional: a token for an access-controlled topic (ntfy.sh reserved topic or self-hosted ACLs).
+        self._headers = {"Content-Type": "application/json"}
+        if access_token:
+            self._headers["Authorization"] = f"Bearer {access_token}"
 
     def send(self, notification: Notification) -> None:
         contact = notification.contact
@@ -57,7 +63,7 @@ class NtfyNotifier:
 
     def _post(self, payload: dict) -> None:
         request = urllib.request.Request(self._server, data=json.dumps(payload).encode(),
-                                         headers={"Content-Type": "application/json"}, method="POST")
+                                         headers=self._headers, method="POST")
         try:
             with urllib.request.urlopen(request, timeout=10) as response:
                 log.info("ntfy push for %s: HTTP %s", payload["title"], response.status)
