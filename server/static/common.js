@@ -84,3 +84,20 @@ export function stateOf(unit) {
   if (unit.status === "ok") return "on";
   return "quiet";
 }
+
+export function dateTime(iso) {
+  return new Date(iso).toLocaleString([], { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+}
+
+export function durationText(minutes) {
+  if (minutes < 1) return "<1 min";
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  return minutes % 60 ? `${hours} h ${minutes % 60} min` : `${hours} h`;
+}
+
+export function uptimeText(seconds) {
+  if (seconds < 3600) return durationText(Math.floor(seconds / 60));
+  const days = Math.floor(seconds / 86400);
+  return days ? `${plural(days, "day")} ${Math.floor((seconds % 86400) / 3600)} h` : durationText(Math.floor(seconds / 60));
+}

@@ -22,6 +22,8 @@
   <nav class="views" aria-label="Views">
     <a href="#board" data-view="board">Live board</a>
     <a href="#patients" data-view="patients">Patients</a>
+    <a href="#history" data-view="history">History</a>
+    <a href="#units" data-view="units">Units</a>
   </nav>
   <div class="who">
     <span id="who"></span>
@@ -39,8 +41,8 @@
     <div id="map" role="region" aria-label="Map of patient homes"></div>
   </section>
 
-  <section class="roster" id="view-patients" aria-label="Patients" hidden>
-    <div class="roster-head">
+  <section class="page" id="view-patients" aria-label="Patients" hidden>
+    <div class="page-head">
       <div>
         <h1>Patients</h1>
         <p class="muted">Each patient has one power unit at their outlet and a call list we alert in order.</p>
@@ -48,6 +50,39 @@
       <button class="btn" id="add-patient" type="button">Add patient</button>
     </div>
     <div id="roster-body"></div>
+  </section>
+
+  <section class="page" id="view-history" aria-label="History" hidden>
+    <div class="page-head">
+      <div>
+        <h1>Outage history</h1>
+        <p class="muted">Every power outage and silent unit: who we alerted, and how fast someone responded.</p>
+      </div>
+      <div class="page-actions">
+        <label class="inline-field" for="history-days">Period
+          <select class="input" id="history-days">
+            <option value="7">Last 7 days</option>
+            <option value="30" selected>Last 30 days</option>
+            <option value="90">Last 90 days</option>
+            <option value="365">Last 12 months</option>
+          </select>
+        </label>
+        <a class="btn btn-quiet" id="history-csv" href="/api/history.csv?days=30" download>Download CSV</a>
+        <button class="btn btn-quiet" id="history-print" type="button">Print report</button>
+      </div>
+    </div>
+    <p class="summary" id="history-summary"></p>
+    <div id="history-body"></div>
+  </section>
+
+  <section class="page" id="view-units" aria-label="Units" hidden>
+    <div class="page-head">
+      <div>
+        <h1>Unit health</h1>
+        <p class="muted">Each power unit's connection, as of its last report. Units report every 30 seconds.</p>
+      </div>
+    </div>
+    <div id="units-body"></div>
   </section>
 </main>
 

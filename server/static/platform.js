@@ -1,4 +1,4 @@
-import { ApiError, api, el, clockTime, listNames, minutesSince, plural, secondsAgo, stateOf, withButton } from "./common.js";
+import { ApiError, api, el, clockTime, dateTime, durationText, listNames, minutesSince, plural, secondsAgo, stateOf, uptimeText, withButton } from "./common.js";
 
 const BOARD_REFRESH_MS = 2000;
 const MAP_CENTER = [31.3, -89.31]; // Pine Belt, Mississippi
@@ -24,16 +24,24 @@ guarded(api("GET", "/api/me")).then(({ email }) => { document.getElementById("wh
 
 // ---- views ---------------------------------------------------------------------
 
-const views = { board: document.getElementById("view-board"), patients: document.getElementById("view-patients") };
+const views = Object.fromEntries(["board", "patients", "history", "units"]
+  .map((name) => [name, document.getElementById(`view-${name}`)]));
+
+function currentView() {
+  const name = location.hash.slice(1);
+  return name in views ? name : "board";
+}
 
 function showView() {
-  const name = location.hash === "#patients" ? "patients" : "board";
+  const name = currentView();
   for (const [key, section] of Object.entries(views)) section.hidden = key !== name;
   for (const link of document.querySelectorAll("[data-view]")) {
     if (link.dataset.view === name) link.setAttribute("aria-current", "page");
     else link.removeAttribute("aria-current");
   }
   if (name === "patients") loadRoster();
+  else if (name === "history") loadHistory();
+  else if (name === "units") renderUnits();
   else map.invalidateSize();
 }
 window.addEventListener("hashchange", showView);
@@ -90,7 +98,8 @@ function unitRow(unit) {
     if (unit.acknowledged_by) lines.push(el("p", {}, `Responding: ${unit.acknowledged_by}`));
     else lines.push(respondButton(unit));
   } else if (unit.status === "offline") {
-    lines.push(el("p", {}, `Unit silent for ${plural(minutesSince(unit.last_seen), "minute")}. Its Wi-Fi or battery may be down; check on the patient.`));
+    lines.push(el("p", {}, `Unit silent for ${durationText(minutesSince(unit.last_seen))}. Its Wi-Fi or battery may be down; check on the patient.` +
+      (unit.silent_alert_sent ? " Care staff have been alerted." : "")));
   } else if (unit.status === "never_seen") {
     lines.push(el("p", { class: "muted" }, "Unit has not connected yet."));
   } else {
@@ -123,6 +132,7 @@ function dropStaleMarkers(units) {
 }
 
 let lastBoard = "";
+let lastUnits = [];
 
 async function refreshBoard() {
   try {
@@ -131,6 +141,8 @@ async function refreshBoard() {
     // Rebuilding unchanged rows every poll would swallow clicks on "We're responding".
     if (snapshot === lastBoard) return;
     lastBoard = snapshot;
+    lastUnits = units;
+    if (currentView() === "units") renderUnits();
     headline(units);
     announce(document.querySelector("#headline h1").textContent);
     document.getElementById("units").replaceChildren(...units.map(unitRow));
@@ -177,6 +189,111 @@ async function loadRoster() {
 }
 
 document.getElementById("add-patient").addEventListener("click", () => openForm());
+
+// ---- history ---------------------------------------------------------------------
+
+const historyDays = document.getElementById("history-days");
+historyDays.addEventListener("change", loadHistory);
+document.getElementById("history-print").addEventListener("click", () => window.print());
+
+const KIND_LABEL = { power: "Power outage", silent: "Unit silent" };
+
+async function loadHistory() {
+  const days = historyDays.value;
+  document.getElementById("history-csv").href = `/api/history.csv?days=${days}`;
+  const body = document.getElementById("history-body");
+  const summary = document.getElementById("history-summary");
+  let incidents;
+  try {
+    ({ incidents } = await guarded(api("GET", `/api/history?days=${days}`)));
+  } catch (error) {
+    summary.textContent = "";
+    body.replaceChildren(el("p", { class: "form-error" }, error.message));
+    return;
+  }
+  summary.textContent = historySummary(incidents, historyDays.selectedOptions[0].textContent.toLowerCase());
+  if (!incidents.length) {
+    body.replaceChildren(el("div", { class: "empty" },
+      el("h2", {}, "Nothing to report"),
+      el("p", { class: "muted" }, "Power outages and silent units will be listed here as they happen.")));
+    return;
+  }
+  body.replaceChildren(el("table", { class: "stack-table" },
+    el("thead", {}, el("tr", {}, ["Started", "Patient", "What happened", "Lasted", "Alerted", "Response"].map((h) => el("th", { scope: "col" }, h)))),
+    el("tbody", {}, incidents.map(historyRow))));
+}
+
+function historySummary(incidents, period) {
+  const outages = incidents.filter((i) => i.kind === "power");
+  const silent = incidents.length - outages.length;
+  const silentNote = silent ? ` ${plural(silent, "unit")} went silent.` : "";
+  if (!outages.length) return `No power outages in the ${period}.${silentNote}`;
+  const answered = outages.filter((i) => i.response_minutes !== null).map((i) => i.response_minutes).sort((a, b) => a - b);
+  const median = answered.length ? answered[Math.floor((answered.length - 1) / 2)] : null;
+  const response = answered.length
+    ? `Someone responded to ${answered.length} of ${outages.length}, with a typical response time of ${durationText(median)}.`
+    : "Nobody acknowledged any of them.";
+  return `${plural(outages.length, "power outage")} in the ${period}. ${response}${silentNote}`;
+}
+
+function historyRow(incident) {
+  const ongoing = incident.ended_at === null;
+  return el("tr", {},
+    el("td", { class: "num", "data-label": "Started" }, dateTime(incident.started_at)),
+    el("td", { "data-label": "Patient" }, el("strong", {}, incident.patient_name), el("div", { class: "muted code" }, incident.device_id)),
+    el("td", { "data-label": "What happened" },
+      el("span", { class: `tag ${incident.kind === "power" ? "tag-out" : ""}` }, KIND_LABEL[incident.kind]),
+      el("div", { class: "muted" }, incident.equipment)),
+    el("td", { class: "num", "data-label": "Lasted" },
+      ongoing ? el("span", { class: "tag tag-ongoing" }, "Ongoing") : durationText(incident.duration_minutes)),
+    el("td", { class: "cell-wide", "data-label": "Alerted" },
+      incident.alerted.length ? listNames(incident.alerted.map((a) => a.name)) : "Nobody yet"),
+    el("td", { class: "cell-wide", "data-label": "Response" }, responseText(incident)));
+}
+
+function responseText(incident) {
+  if (incident.kind === "silent") return el("span", { class: "muted" }, "Not needed");
+  if (incident.acknowledged_by) return `${incident.acknowledged_by} after ${durationText(incident.response_minutes)}`;
+  if (incident.ended_at === null) return "Waiting";
+  return el("span", { class: "no-response" }, "No one responded");
+}
+
+// ---- unit health -------------------------------------------------------------------
+
+function signalLevel(rssi) {
+  if (rssi >= -60) return [4, "Strong"];
+  if (rssi >= -70) return [3, "Good"];
+  if (rssi >= -80) return [2, "Weak"];
+  return [1, "Poor"];
+}
+
+function signalCell(rssi) {
+  if (rssi === null) return el("span", { class: "muted" }, "Not reported");
+  const [level, label] = signalLevel(rssi);
+  return el("span", {},
+    el("span", { class: "bars", "data-level": String(level), "aria-hidden": "true" }, el("span"), el("span"), el("span"), el("span")),
+    `${label} (${rssi} dBm)`);
+}
+
+function renderUnits() {
+  const body = document.getElementById("units-body");
+  if (!lastUnits.length) {
+    body.replaceChildren(el("div", { class: "empty" }, el("h2", {}, "No units yet"),
+      el("p", { class: "muted" }, "Add a patient and set up their power unit to see it here.")));
+    return;
+  }
+  const units = [...lastUnits].sort((a, b) => a.name.localeCompare(b.name));
+  body.replaceChildren(el("table", { class: "stack-table" },
+    el("thead", {}, el("tr", {}, ["Patient", "Status", "Last report", "Wi-Fi", "Firmware", "Running for"].map((h) => el("th", { scope: "col" }, h)))),
+    el("tbody", {}, units.map((unit) => el("tr", {},
+      el("td", { "data-label": "Patient" }, el("strong", {}, unit.name), el("div", { class: "muted code" }, unit.device_id)),
+      el("td", { "data-label": "Status" }, el("span", { class: `tag ${stateOf(unit) === "out" ? "tag-out" : ""}` }, STATE_LABEL[stateOf(unit)])),
+      el("td", { class: "num", "data-label": "Last report" }, unit.last_seen ? secondsAgo(unit.last_seen) : "Never"),
+      el("td", { class: "cell-wide", "data-label": "Wi-Fi" }, signalCell(unit.rssi)),
+      el("td", { class: "code", "data-label": "Firmware" }, unit.firmware ?? "Unknown"),
+      el("td", { class: "num", "data-label": "Running for" }, unit.uptime_s === null ? "Unknown" : uptimeText(unit.uptime_s)),
+    )))));
+}
 
 // ---- add / edit panel ----------------------------------------------------------
 
@@ -270,7 +387,7 @@ function openForm(patient) {
   });
 
   panelContent.replaceChildren(form);
-  if (editing) panelContent.append(credentialsBlock(patient));
+  if (editing) panelContent.append(credentialsBlock(patient), recentIncidentsBlock(patient));
   renumber();
   panel.showModal();
   form.querySelector("input:not([disabled])").focus();
@@ -308,6 +425,21 @@ function removeButton(patient) {
     refreshBoard();
   });
   return button;
+}
+
+function recentIncidentsBlock(patient) {
+  const list = el("ul", { class: "timeline" }, el("li", { class: "muted" }, "Loading…"));
+  guarded(api("GET", `/api/history?days=90&device_id=${encodeURIComponent(patient.device_id)}`))
+    .then(({ incidents }) => {
+      list.replaceChildren(...(incidents.length
+        ? incidents.slice(0, 10).map((i) => el("li", {},
+            el("strong", {}, `${KIND_LABEL[i.kind]}, ${dateTime(i.started_at)}`),
+            el("span", {}, [i.ended_at === null ? "Still going." : `Lasted ${durationText(i.duration_minutes)}.`,
+                            i.kind === "power" ? (i.acknowledged_by ? ` ${i.acknowledged_by} responded after ${durationText(i.response_minutes)}.` : " Nobody acknowledged it.") : ""].join(""))))
+        : [el("li", { class: "muted" }, "No outages in the last 90 days.")]));
+    })
+    .catch((error) => list.replaceChildren(el("li", { class: "form-error" }, error.message)));
+  return el("div", { class: "panel-body" }, el("h3", {}, "Recent incidents"), list);
 }
 
 // ---- credentials: what the installer and the family need -------------------------
