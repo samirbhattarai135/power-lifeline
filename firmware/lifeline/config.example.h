@@ -22,3 +22,19 @@
 #define BATTERY_DIVIDER_RATIO 2.0f
 
 #define STATUS_LED_PIN 2
+
+// ---- optional parts: set the GPIO you wired, or -1 if not fitted ----------------------------
+
+// Active buzzer (+ to this pin, - to GND): beeps when the power goes out until someone presses the button.
+#define BUZZER_PIN -1
+// Push button between this pin and GND (internal pull-up). Short press: "I'm here".
+// Hold 3 s: call for help. Hold while powering on: open the phone setup screen.
+#define BUTTON_PIN -1
+// SCT-013-030 current clamp on the equipment's cord, through a 1.65 V bias (two 10k resistors
+// from 3V3 to GND, 10 uF to GND at the midpoint). Must be an ADC1 pin: 32, 33, 36 or 39.
+#define CURRENT_SENSOR_PIN -1
+#define CURRENT_AMPS_PER_VOLT 30.0f  // 30 for SCT-013-030, 5 for SCT-013-005
+#define CURRENT_CALIBRATION 1.0f     // tweak against a clamp meter
+// Room temperature: DHT11 (11), DHT22 (22) or DS18B20 (18) data pin.
+#define TEMP_SENSOR_PIN -1
+#define TEMP_SENSOR_TYPE 11
