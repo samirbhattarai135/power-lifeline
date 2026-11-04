@@ -1,9 +1,12 @@
 """Staff sign-in. A StaffAuthenticator checks an email + password against
 whatever identity provider is configured; Sessions then hands out our own
-opaque, expiring session ids so no provider token ever reaches the browser."""
+signed, expiring session cookies so no provider token ever reaches the browser."""
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import hmac
 import secrets
 import threading
 from dataclasses import dataclass
@@ -25,33 +28,76 @@ class StaffAuthenticator(Protocol):
 
 
 class Sessions:
-    # ponytail: in-memory; staff sign in again after a server restart. Persist if that annoys anyone.
-    def __init__(self) -> None:
+    """Signed, expiring session cookies: "email|expiry|session id" plus an HMAC under a server secret.
+    Nothing is stored server-side, so staff stay signed in across restarts; the secret
+    (LIFELINE_SESSION_SECRET) is what makes a cookie impossible to forge or alter.
+    Signing out clears the cookie and remembers it as revoked until it would have expired.
+    ponytail: that revoked list is in memory, so a signed-out cookie copied before sign-out
+    works again after a restart, until its 12 hours run out. Store revocations if that matters."""
+
+    MIN_SECRET_LENGTH = 32
+
+    def __init__(self, secret: str):
+        if len(secret) < self.MIN_SECRET_LENGTH:
+            raise ValueError(f"LIFELINE_SESSION_SECRET must be at least {self.MIN_SECRET_LENGTH} characters")
+        self._key = secret.encode()
         self._lock = threading.Lock()
-        self._sessions: dict[str, tuple[StaffMember, datetime]] = {}
+        self._revoked: dict[str, datetime] = {}  # session id -> when it would have expired anyway
 
-    def start(self, member: StaffMember) -> str:
-        session_id = secrets.token_urlsafe(32)
-        with self._lock:
-            self._sessions[session_id] = (member, datetime.now(timezone.utc) + SESSION_LIFETIME)
-        return session_id
+    def start(self, member: StaffMember, now: datetime | None = None) -> str:
+        expires_at = (now or datetime.now(timezone.utc)) + SESSION_LIFETIME
+        payload = f"{member.email}|{int(expires_at.timestamp())}|{secrets.token_urlsafe(16)}".encode()
+        return f"{_b64(payload)}.{_b64(self._sign(payload))}"
 
-    def member(self, session_id: str | None) -> StaffMember | None:
-        if not session_id:
+    def member(self, token: str | None, now: datetime | None = None) -> StaffMember | None:
+        now = now or datetime.now(timezone.utc)
+        parsed = self._parse(token)
+        if parsed is None:
             return None
+        email, expires_at, session_id = parsed
         with self._lock:
-            entry = self._sessions.get(session_id)
-            if entry is None:
+            if session_id in self._revoked:
                 return None
-            member, expires_at = entry
-            if datetime.now(timezone.utc) >= expires_at:
-                del self._sessions[session_id]
-                return None
-            return member
+        return StaffMember(email) if now < expires_at else None
 
-    def end(self, session_id: str | None) -> None:
+    def end(self, token: str | None) -> None:
+        parsed = self._parse(token)
+        if parsed is None:
+            return
+        now = datetime.now(timezone.utc)
         with self._lock:
-            self._sessions.pop(session_id or "", None)
+            self._revoked = {i: e for i, e in self._revoked.items() if e > now}  # forget long-dead sessions
+            # By id, not by cookie text: a re-encoded copy of the same cookie stays signed out too.
+            self._revoked[parsed[2]] = parsed[1]
+
+    def _parse(self, token: str | None) -> tuple[str, datetime, str] | None:
+        if not token:
+            return None
+        try:
+            payload_part, signature_part = token.split(".")
+            payload = _unb64(payload_part)
+            if not hmac.compare_digest(_unb64(signature_part), self._sign(payload)):
+                return None
+            email, expires_text, session_id = payload.decode().rsplit("|", 2)
+            return email, datetime.fromtimestamp(int(expires_text), timezone.utc), session_id
+        except (ValueError, UnicodeDecodeError):
+            return None
+
+    def _sign(self, payload: bytes) -> bytes:
+        return hmac.new(self._key, payload, hashlib.sha256).digest()
+
+
+def _b64(raw: bytes) -> str:
+    return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
+
+
+def _unb64(text: str) -> bytes:
+    """Strict: only the one canonical spelling of each value decodes, so a token can't be
+    re-encoded into a different string that still verifies."""
+    raw = base64.b64decode(text + "=" * (-len(text) % 4), altchars=b"-_", validate=True)
+    if _b64(raw) != text:
+        raise ValueError("non-canonical encoding")
+    return raw
 
 
 class LoginThrottle:

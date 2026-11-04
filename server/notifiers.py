@@ -14,6 +14,7 @@ import urllib.request
 from xml.sax.saxutils import escape
 
 from domain import Channel, Notification
+from service import DeliveryFailed
 
 log = logging.getLogger("lifeline.notify")
 
@@ -53,13 +54,18 @@ class NtfyNotifier:
 
     def send(self, notification: Notification) -> None:
         contact = notification.contact
-        self._post({
+        payload = {
             "topic": self._topic,
             "title": f"For {contact.name} ({contact.role})",
             "message": notification.message,
             "priority": 5,  # "urgent": long vibration, can break through Do Not Disturb
             "tags": ["rotating_light"],
-        })
+        }
+        if notification.respond_url:
+            # One tap on the lock screen acknowledges the outage as this contact.
+            payload["actions"] = [{"action": "http", "label": "I'm responding", "url": notification.respond_url,
+                                   "method": "POST", "clear": True}]
+        self._post(payload)
 
     def _post(self, payload: dict) -> None:
         request = urllib.request.Request(self._server, data=json.dumps(payload).encode(),
@@ -68,9 +74,9 @@ class NtfyNotifier:
             with urllib.request.urlopen(request, timeout=10) as response:
                 log.info("ntfy push for %s: HTTP %s", payload["title"], response.status)
         except urllib.error.HTTPError as error:
-            log.error("ntfy push failed: HTTP %s %s", error.code, error.read()[:300])
-        except urllib.error.URLError as error:
-            log.error("ntfy push failed: %s", error.reason)
+            raise DeliveryFailed(f"ntfy HTTP {error.code} {error.read()[:300]!r}", _retryable(error.code)) from error
+        except (urllib.error.URLError, TimeoutError, OSError) as error:
+            raise DeliveryFailed(f"ntfy unreachable: {getattr(error, 'reason', error)}", retryable=True) from error
 
 WHATSAPP_PREFIX = "whatsapp:"
 
@@ -108,13 +114,21 @@ class TwilioNotifier:
             headers={"Authorization": self._auth_header},
             method="POST",
         )
+        to = masked(fields["To"])
         try:
             with urllib.request.urlopen(request, timeout=10) as response:
-                log.info("twilio %s to %s: HTTP %s", resource, masked(fields["To"]), response.status)
+                log.info("twilio %s to %s: HTTP %s", resource, to, response.status)
         except urllib.error.HTTPError as error:
-            log.error("twilio %s to %s failed: HTTP %s %s", resource, masked(fields["To"]), error.code, error.read()[:300])
-        except urllib.error.URLError as error:
-            log.error("twilio %s to %s failed: %s", resource, masked(fields["To"]), error.reason)
+            raise DeliveryFailed(f"twilio {resource} to {to}: HTTP {error.code} {error.read()[:300]!r}",
+                                 _retryable(error.code)) from error
+        except (urllib.error.URLError, TimeoutError, OSError) as error:
+            raise DeliveryFailed(f"twilio {resource} to {to} unreachable: {getattr(error, 'reason', error)}",
+                                 retryable=True) from error
+
+
+def _retryable(status: int) -> bool:
+    """Rate limits and server errors may pass; a 4xx rejection will fail the same way again."""
+    return status == 429 or status >= 500
 
 
 def is_valid_twilio_signature(auth_token: str, url: str, params: dict[str, str], signature: str) -> bool:

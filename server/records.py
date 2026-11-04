@@ -5,10 +5,11 @@ outage or silent unit) is a flat dict with an `alerted` list, stored in `outages
 
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import datetime
 from typing import Any
 
-from domain import Alerted, Channel, Contact, IncidentKind, InvalidPatient, Outage, Patient
+from domain import Alerted, Channel, Contact, EmergencyPlan, IncidentKind, InvalidPatient, Outage, Patient
 
 
 def patient_to_record(patient: Patient) -> dict[str, Any]:
@@ -27,6 +28,9 @@ def patient_to_record(patient: Patient) -> dict[str, Any]:
             {"role": c.role, "name": c.name, "phone": c.phone, "channel": c.channel.value}
             for c in patient.contacts
         ],
+        # Columns from migration 004; left out while unused so saves keep working before it is run.
+        **({"plan": asdict(patient.plan)} if not patient.plan.is_empty() else {}),
+        **({"running_amps_min": patient.running_amps_min} if patient.running_amps_min is not None else {}),
     }
 
 
@@ -55,6 +59,8 @@ def patient_from_form(form: dict[str, Any], device_token: str, share_token: str)
             backup_minutes=int(form["backup_minutes"]),
             acuity=int(form["acuity"]),
             contacts=contacts,
+            plan=_plan(form.get("plan")),
+            running_amps_min=_optional_float(form.get("running_amps_min")),
         )
     except KeyError as missing:
         raise InvalidPatient(f"Missing field: {missing.args[0]}") from None
@@ -62,6 +68,19 @@ def patient_from_form(form: dict[str, Any], device_token: str, share_token: str)
         if isinstance(error, InvalidPatient):
             raise
         raise InvalidPatient("Check the numbers: location, backup minutes and acuity must be numeric") from None
+
+
+def _plan(raw: Any) -> EmergencyPlan:
+    if raw in (None, ""):
+        return EmergencyPlan()
+    if not isinstance(raw, dict):
+        raise InvalidPatient("The emergency plan must be an object")
+    known = {name: raw.get(name, "") for name in EmergencyPlan.__dataclass_fields__}
+    return EmergencyPlan(**{name: value.strip() if isinstance(value, str) else value for name, value in known.items()})
+
+
+def _optional_float(raw: Any) -> float | None:
+    return None if raw in (None, "") else float(raw)
 
 
 def _contact(raw: Any) -> Contact:

@@ -2,6 +2,7 @@
 
 import json
 import tempfile
+import time
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -12,11 +13,13 @@ import urllib.error
 import urllib.request
 
 import app
-from app import incident_view, incidents_csv, unit_health
-from domain import (Channel, Contact, IncidentKind, InvalidPatient, Monitor, Notification, Patient, ReplyResult,
+from app import button_event, incident_view, incidents_csv, sensor_readings, unit_health
+from domain import (Button, Channel, Contact, IncidentKind, SensorReadings, InvalidPatient, Monitor, Notification, Patient, ReplyResult,
                     UnitHealth, UnknownDevice)
 from local import JsonFileOutageStore, JsonFilePatientStore, SharedPasswordAuthenticator
 from notifiers import NtfyNotifier, TwilioNotifier, is_valid_twilio_signature
+from geocode import Match, matches_from_response
+from respond import RespondTokens
 from records import outage_from_record, outage_to_record, patient_from_form, patient_from_record, patient_to_record
 import service
 from service import DuplicateDevice, Lifeline
@@ -131,6 +134,70 @@ class OutageFlow(unittest.TestCase):
         self.assertEqual(m.status("unit-01", T0 + timedelta(seconds=91))["status"], "offline")
         with self.assertRaises(UnknownDevice):
             m.report("nope", True, None, T0)
+
+
+def amps(value):
+    return SensorReadings(load_amps=value)
+
+
+class UnitSensorsAndButtons(unittest.TestCase):
+    def test_machine_stopped_alerts_after_a_minute_and_clears_when_running(self):
+        m = make_monitor(a_patient(running_amps_min=0.5))
+        self.assertEqual(m.report("unit-01", True, 90, T0, readings=amps(2.1)), [])
+        self.assertEqual(m.report("unit-01", True, 90, T0 + timedelta(seconds=30), readings=amps(0.1)), [])  # not yet
+        (alert,) = m.report("unit-01", True, 90, T0 + timedelta(seconds=90), readings=amps(0.1))
+        self.assertIn("oxygen concentrator has stopped", alert.message)
+        self.assertIn("Reply OK 1111", alert.message)
+        self.assertEqual(m.status("unit-01", T0)["emergency"], "machine")
+        self.assertEqual([n.contact.name for n in m.tick(T0 + timedelta(seconds=90) + ESCALATE)], ["Nurse"])
+        back = m.report("unit-01", True, 90, T0 + timedelta(minutes=10), readings=amps(2.0))
+        self.assertTrue(all("running again" in n.message for n in back))
+
+    def test_no_clamp_or_no_power_means_no_machine_alert(self):
+        unclamped = make_monitor()
+        unclamped.report("unit-01", True, 90, T0, readings=amps(0.0))
+        self.assertEqual(unclamped.report("unit-01", True, 90, T0 + timedelta(minutes=5), readings=amps(0.0)), [])
+        m = make_monitor(a_patient(running_amps_min=0.5))
+        m.report("unit-01", True, 90, T0, readings=amps(0.1))
+        m.report("unit-01", True, 90, T0 + timedelta(seconds=90), readings=amps(0.1))  # machine stopped
+        (power,) = m.report("unit-01", False, 90, T0 + timedelta(minutes=3), readings=amps(0.0))
+        self.assertIn("Power is out", power.message)  # power loss replaces the machine alert
+        self.assertEqual(m.status("unit-01", T0)["emergency"], "power")
+
+    def test_help_button_alerts_everyone_at_once_and_ends_when_answered(self):
+        m = make_monitor()
+        sent = m.report("unit-01", True, 90, T0, button=Button.HELP)
+        self.assertEqual([n.contact.name for n in sent], ["Daughter", "Nurse"])
+        self.assertIn("help button was pressed", sent[0].message)
+        self.assertEqual(m.tick(T0 + 10 * ESCALATE), [])  # nobody left to escalate to
+        self.assertEqual(m.report("unit-01", True, 90, T0, button=Button.HELP), [])  # pressing again
+        self.assertTrue(m.acknowledge_by_button(sent[1].incident_id, sent[1].alert_index, T0 + timedelta(minutes=2)))
+        self.assertEqual(m.status("unit-01", T0)["status"], "ok")
+        self.assertEqual(m.drain_changes()[-1].ended_at, T0 + timedelta(minutes=2))
+
+    def test_unit_button_acknowledges_as_someone_at_home(self):
+        m = make_monitor()
+        m.report("unit-01", False, 90, T0)
+        m.report("unit-01", False, 90, T0 + timedelta(seconds=40), button=Button.ACK)
+        self.assertEqual(m.status("unit-01", T0)["acknowledged_by"], "Someone at home (unit button)")
+        self.assertEqual(m.tick(T0 + ESCALATE), [])
+
+    def test_room_too_hot_for_ten_minutes_alerts_care_staff_once(self):
+        m = make_monitor()
+        hot = SensorReadings(room_temp_f=96)
+        m.report("unit-01", False, 90, T0, readings=hot)
+        m.report("unit-01", False, 90, T0 + timedelta(minutes=5), readings=hot)
+        (alert,) = [n for n in m.report("unit-01", False, 90, T0 + timedelta(minutes=10), readings=hot) if "room" in n.message]
+        self.assertEqual(alert.contact.name, "Nurse")
+        self.assertIn("96°F, dangerously hot", alert.message)
+        self.assertEqual(m.report("unit-01", False, 90, T0 + timedelta(minutes=20), readings=hot), [])
+        (calm,) = m.report("unit-01", False, 90, T0 + timedelta(minutes=30), readings=SensorReadings(room_temp_f=75))
+        self.assertIn("back to a safe temperature", calm.message)
+
+    def test_report_parsing_keeps_good_values_only(self):
+        self.assertEqual(sensor_readings({"load_amps": 1.5, "room_temp_f": 71}), SensorReadings(1.5, 71.0))
+        self.assertEqual(sensor_readings({"load_amps": -3, "room_temp_f": "hot"}), SensorReadings())
+        self.assertEqual((button_event({"event": "help"}), button_event({"event": "dance"})), (Button.HELP, None))
 
 
 class RestartRecovery(unittest.TestCase):
@@ -385,6 +452,58 @@ class StormWatchService(unittest.TestCase):
         self.assertEqual(len(lifeline.snapshot()[0]["hazards"]), 1)
 
 
+class AddressLookup(unittest.TestCase):
+    def test_census_matches_are_parsed(self):
+        body = {"result": {"addressMatches": [
+            {"matchedAddress": "118 W PINE ST, HATTIESBURG, MS, 39401", "coordinates": {"x": -89.2908, "y": 31.3266}}]}}
+        self.assertEqual(matches_from_response(body), [Match("118 W PINE ST, HATTIESBURG, MS, 39401", 31.3266, -89.2908)])
+        self.assertEqual(matches_from_response({"result": {"addressMatches": []}}), [])
+
+
+class OneTapRespond(unittest.TestCase):
+    def test_tokens_round_trip_and_resist_tampering(self):
+        tokens = RespondTokens("k" * 40)
+        token = tokens.token("incident-0", 1)
+        self.assertEqual(tokens.verify(token), ("incident-0", 1))
+        self.assertNotIn("+1601", token)
+        payload, signature = token.split(".")
+        forged = RespondTokens("k" * 40).token("incident-0", 2).split(".")[0] + "." + signature
+        self.assertIsNone(tokens.verify(forged))                     # someone else's alert
+        self.assertIsNone(RespondTokens("x" * 40).verify(token))      # another server's secret
+        self.assertIsNone(tokens.verify("garbage"))
+        with self.assertRaises(ValueError):
+            RespondTokens("short")
+
+    def test_button_acknowledges_as_that_contact_until_the_outage_ends(self):
+        m = make_monitor()
+        (alert,) = m.report("unit-01", False, 90, T0)
+        self.assertEqual((alert.incident_id, alert.alert_index), ("incident-0", 0))
+        self.assertFalse(m.acknowledge_by_button("incident-0", 5, T0))   # no such alert
+        self.assertTrue(m.acknowledge_by_button("incident-0", 0, T0))
+        self.assertEqual(m.status("unit-01", T0)["acknowledged_by"], "Daughter (push button)")
+        self.assertFalse(m.acknowledge_by_button("incident-0", 0, T0))   # already handled
+        m.report("unit-01", True, 90, T0 + timedelta(minutes=1))
+        self.assertFalse(m.acknowledge_by_button("incident-0", 0, T0))   # outage over
+
+    def test_only_power_alerts_get_a_button_and_ntfy_shows_it(self):
+        sent = []
+        notifier = type("Recorder", (), {"send": lambda self, n: sent.append(n)})()
+        lifeline = Lifeline(make_monitor(), MemoryStore(a_patient()), notifier, MemoryOutageStore(),
+                            respond_link=lambda incident_id, index: f"https://x/api/respond/{incident_id}.{index}")
+        lifeline.report("unit-01", False, 90)
+        lifeline.report("unit-01", True, 90)
+        lifeline._senders.shutdown(wait=True)
+        self.assertEqual([n.respond_url for n in sent], ["https://x/api/respond/incident-0.0", None])
+        self.assertEqual(lifeline.family_status("s" * 20)["acknowledged_by"], None)
+        pushed = []
+        ntfy = NtfyNotifier("lifeline-0123456789abcdef")
+        ntfy._post = pushed.append
+        ntfy.send(sent[0])
+        ntfy.send(sent[1])
+        self.assertEqual(pushed[0]["actions"][0]["url"], "https://x/api/respond/incident-0.0")
+        self.assertNotIn("actions", pushed[1])
+
+
 class PatientValidation(unittest.TestCase):
     def test_invariants(self):
         for bad in (dict(contacts=()), dict(acuity=7), dict(device_id="Bad ID"), dict(lat=200),
@@ -409,6 +528,18 @@ class PatientValidation(unittest.TestCase):
 
     def test_record_round_trip(self):
         self.assertEqual(patient_from_record(patient_to_record(a_patient())), a_patient())
+
+    def test_plan_and_running_current_round_trip_and_stay_out_of_records_until_set(self):
+        self.assertNotIn("plan", patient_to_record(a_patient()))
+        self.assertNotIn("running_amps_min", patient_to_record(a_patient()))
+        planned = patient_from_form(a_form(plan={"supplies": " 2 tanks ", "place_name": "Forrest General", "steps": "Switch to tank"},
+                                           running_amps_min="0.8"), TOKEN, TOKEN)
+        self.assertEqual((planned.plan.supplies, planned.running_amps_min), ("2 tanks", 0.8))
+        self.assertEqual(patient_from_record(patient_to_record(planned)), planned)
+        with self.assertRaisesRegex(InvalidPatient, "Running current"):
+            patient_from_form(a_form(running_amps_min=99), TOKEN, TOKEN)
+        with self.assertRaisesRegex(InvalidPatient, "at most"):
+            patient_from_form(a_form(plan={"steps": "x" * 700}), TOKEN, TOKEN)
 
 
 class MemoryStore:
@@ -475,6 +606,11 @@ class RosterUseCases(unittest.TestCase):
         self.assertIsNone(self.lifeline.family_status("s" * 20))
         self.assertIsNotNone(self.lifeline.family_status(rotated.share_token))
 
+    def test_family_sees_the_plan_only_once_written(self):
+        self.assertIsNone(self.lifeline.family_status("s" * 20)["plan"])
+        self.lifeline.update_patient("unit-01", a_form(plan={"place_name": "Forrest General"}))
+        self.assertEqual(self.lifeline.family_status("s" * 20)["plan"]["place_name"], "Forrest General")
+
     def test_family_ack_only_during_outage(self):
         self.assertFalse(self.lifeline.family_acknowledge("s" * 20))
         self.lifeline.report("unit-01", False, 90)
@@ -497,6 +633,36 @@ class RosterUseCases(unittest.TestCase):
         self.lifeline.report("unit-01", False, 90)
         self.lifeline.wait_for_saves()
         self.assertEqual(len(self.outages.saved), 1)
+
+    def test_county_view_shows_urgency_without_numbers_or_tokens(self):
+        self.lifeline.add_patient(a_form(device_id="unit-02", name="James"))
+        self.lifeline.report("unit-02", False, 90)
+        self.lifeline.acknowledge("unit-02", "nurse@agency.org (agency)")
+        homes = self.lifeline.county_view()
+        self.assertEqual([(h["name"], h["status"], h["responder"]) for h in homes],
+                         [("James", "outage", "The care agency"), ("Ruth", "never_seen", None)])
+        text = json.dumps(homes)
+        for secret in ("+1601", TOKEN, "s" * 20, "nurse@agency.org"):
+            self.assertNotIn(secret, text)
+
+    def test_alert_lost_to_a_network_drop_is_retried_until_delivered(self):
+        self.addCleanup(setattr, service, "SEND_BACKOFF_SECONDS", service.SEND_BACKOFF_SECONDS)
+        service.SEND_BACKOFF_SECONDS = 0
+        for retryable, expected_tries, expected_delivered in ((True, 3, 1), (False, 1, 0)):
+            with self.subTest(retryable=retryable):
+                attempts, delivered = [], []
+
+                class Flaky:
+                    def send(self, notification):
+                        attempts.append(notification)
+                        if len(attempts) < 3:
+                            raise service.DeliveryFailed("handshake timed out", retryable)
+                        delivered.append(notification)
+
+                lifeline = Lifeline(make_monitor(), MemoryStore(a_patient()), Flaky(), MemoryOutageStore())
+                lifeline.report("unit-01", False, 90)
+                lifeline._senders.shutdown(wait=True)
+                self.assertEqual((len(attempts), len(delivered)), (expected_tries, expected_delivered))
 
     def test_remove_revokes_link(self):
         self.lifeline.remove_patient("unit-01")
@@ -537,12 +703,39 @@ class LocalAdapters(unittest.TestCase):
 
 class StaffSessions(unittest.TestCase):
     def test_sessions(self):
-        sessions = Sessions()
+        sessions = Sessions("k" * 40)
         sid = sessions.start(StaffMember("nurse@agency.org"))
         self.assertEqual(sessions.member(sid).email, "nurse@agency.org")
         sessions.end(sid)
         self.assertIsNone(sessions.member(sid))
         self.assertIsNone(sessions.member(None))
+
+    def test_sessions_survive_a_restart_but_not_tampering_or_expiry(self):
+        token = Sessions("k" * 40).start(StaffMember("nurse@agency.org"), now=T0)
+        restarted = Sessions("k" * 40)  # same secret, fresh process
+        self.assertEqual(restarted.member(token, now=T0 + timedelta(hours=1)), StaffMember("nurse@agency.org"))
+        self.assertIsNone(restarted.member(token, now=T0 + timedelta(hours=13)))       # expired
+        self.assertIsNone(Sessions("x" * 40).member(token, now=T0))                    # other server's secret
+        payload, signature = token.split(".")
+        forged = Sessions("x" * 40).start(StaffMember("boss@agency.org"), now=T0).split(".")[0] + "." + signature
+        self.assertIsNone(restarted.member(forged, now=T0))                            # swapped identity
+        with self.assertRaises(ValueError):
+            Sessions("short")
+
+    def test_signed_out_cookie_stays_out_even_when_re_encoded(self):
+        sessions = Sessions("k" * 40)
+        token = sessions.start(StaffMember("nurse@agency.org"))
+        payload, signature = token.split(".")
+        sessions.end(token)
+        # Same bytes, different spellings: stray padding, or a last character whose spare bits differ.
+        last = signature[-1]
+        alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+        sibling = alphabet[alphabet.index(last) ^ 1]
+        for variant in (f"{payload}.{signature}=", f"{payload}.{signature[:-1]}{sibling}", f"{payload}=.{signature}"):
+            with self.subTest(variant=variant[-6:]):
+                self.assertIsNone(sessions.member(variant))
+        self.assertIsNone(sessions.member(token))
+        self.assertEqual(sessions.member(sessions.start(StaffMember("nurse@agency.org"))).email, "nurse@agency.org")
 
     def test_throttle_per_account(self):
         throttle = LoginThrottle()
@@ -608,16 +801,74 @@ class NtfyPush(unittest.TestCase):
 
 class StaffOnlyRoutes(unittest.TestCase):
     def test_history_and_report_need_a_signed_in_staff_member(self):
-        app.Handler.sessions = Sessions()
+        app.Handler.sessions = Sessions("k" * 40)
         server = app.ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
-        for path in ("/api/history", "/api/history.csv?days=7", "/api/weather-map"):
+        for path in ("/api/history", "/api/history.csv?days=7", "/api/weather-map", "/api/patients"):
             with self.subTest(path=path), self.assertRaises(urllib.error.HTTPError) as refused:
                 urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}{path}", timeout=5)
             self.assertEqual(refused.exception.code, 401)
             refused.exception.close()
+
+
+class StaticFiles(unittest.TestCase):
+    def test_map_library_and_its_images_are_served_and_nothing_outside_static(self):
+        server = app.ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        base = f"http://127.0.0.1:{server.server_port}/static/"
+        for name in ("leaflet.js", "leaflet.css", "images/layers.png", "map.js"):
+            with self.subTest(name=name), urllib.request.urlopen(base + name, timeout=5) as response:
+                self.assertEqual(response.status, 200)
+        for name in ("../app.py", "images/../../.env", "..%2Fapp.py", ".env"):
+            with self.subTest(name=name), self.assertRaises(urllib.error.HTTPError) as refused:
+                urllib.request.urlopen(base + name, timeout=5)
+            self.assertEqual(refused.exception.code, 404)
+            refused.exception.close()
+
+
+class CountyRoute(unittest.TestCase):
+    def test_county_page_is_off_without_a_token_and_needs_the_exact_one(self):
+        app.Handler.lifeline = Lifeline(make_monitor(), MemoryStore(a_patient()), SilentNotifier(), MemoryOutageStore())
+        server = app.ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.addCleanup(setattr, app.Handler, "county_token", None)
+        url = f"http://127.0.0.1:{server.server_port}/api/county/"
+        for configured, asked in ((None, "c" * 40), ("c" * 40, "d" * 40)):
+            app.Handler.county_token = configured
+            with self.subTest(configured=configured), self.assertRaises(urllib.error.HTTPError) as refused:
+                urllib.request.urlopen(url + asked, timeout=5)
+            self.assertEqual(refused.exception.code, 404)
+            refused.exception.close()
+        app.Handler.county_token = "c" * 40
+        with urllib.request.urlopen(url + "c" * 40, timeout=5) as response:
+            self.assertEqual(json.load(response)["homes"][0]["name"], "Ruth")
+
+
+class RespondRoute(unittest.TestCase):
+    def test_forged_button_link_is_refused_and_a_real_one_acknowledges(self):
+        app.Handler.respond_tokens = RespondTokens("k" * 40)
+        app.Handler.lifeline = Lifeline(make_monitor(), MemoryStore(a_patient()), SilentNotifier(), MemoryOutageStore())
+        app.Handler.lifeline.report("unit-01", False, 90)
+        server = app.ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        base = f"http://127.0.0.1:{server.server_port}/api/respond/"
+        forged = RespondTokens("x" * 40).token("incident-0", 0)
+        with self.assertRaises(urllib.error.HTTPError) as refused:
+            urllib.request.urlopen(urllib.request.Request(base + forged, method="POST"), timeout=5)
+        self.assertEqual(refused.exception.code, 404)
+        refused.exception.close()
+        real = app.Handler.respond_tokens.token("incident-0", 0)
+        with urllib.request.urlopen(urllib.request.Request(base + real, method="POST"), timeout=5) as response:
+            self.assertEqual(json.load(response), {"acknowledged": True})
+        self.assertEqual(app.Handler.lifeline.family_status("s" * 20)["acknowledged_by"], "Someone on the call list")
 
 
 class FakeSupabase(BaseHTTPRequestHandler):
@@ -639,6 +890,9 @@ class FakeSupabase(BaseHTTPRequestHandler):
 
     def do_GET(self):
         self._record()
+        if self.path.startswith("/rest/v1/slow"):
+            time.sleep(0.5)  # accepts the connection, then goes quiet mid-reply
+            return
         if self.path.startswith("/rest/v1/outages"):
             m = make_monitor()
             m.report("unit-01", False, 90, T0)
@@ -714,6 +968,13 @@ class SupabaseAdapters(unittest.TestCase):
         self.assertTrue(since_path.startswith("/rest/v1/outages?select=*&started_at=gte.2026-11-02T03"))
         self.assertEqual((post_path, body[0]["id"]), ("/rest/v1/outages", open_incident.id))
         self.assertIn("merge-duplicates", post_headers["Prefer"])
+
+    def test_a_read_timeout_is_reported_as_unreachable_not_a_crash(self):
+        import supabase_backend
+        self.addCleanup(setattr, supabase_backend, "TIMEOUT_SECONDS", supabase_backend.TIMEOUT_SECONDS)
+        supabase_backend.TIMEOUT_SECONDS = 0.1
+        with self.assertRaises(supabase_backend.SupabaseUnreachable):
+            self.client().request("GET", "/rest/v1/slow")
 
     def test_auth(self):
         auth = SupabaseAuthenticator(self.client())

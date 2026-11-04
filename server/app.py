@@ -18,7 +18,9 @@ import logging
 import mimetypes
 import os
 import re
+import secrets
 import threading
+import time
 import urllib.parse
 from datetime import timedelta
 from zoneinfo import ZoneInfo
@@ -28,15 +30,18 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable
 
-from domain import DEVICE_ID_PATTERN, IncidentKind, InvalidPatient, Monitor, Outage, Patient, ReplyResult, UnitHealth, UnknownDevice
+from domain import DEVICE_ID_PATTERN, Button, IncidentKind, SensorReadings, InvalidPatient, Monitor, Outage, Patient, ReplyResult, UnitHealth, UnknownDevice
 from local import JsonFileOutageStore, JsonFilePatientStore, SharedPasswordAuthenticator
 from notifiers import WHATSAPP_PREFIX, ConsoleNotifier, NtfyNotifier, TwilioNotifier, is_valid_twilio_signature
 from records import patient_to_record
+from geocode import MAX_ADDRESS_LENGTH, CensusGeocoder, GeocoderUnavailable
+from respond import RespondTokens
 from service import DuplicateDevice, Lifeline, Notifier, OutageStore, PatientStore, utc_now
 from staff import LoginThrottle, Sessions, StaffAuthenticator, StaffMember
 from storm import StormWatch, WeatherSource
 from weather import DemoWeather, NwsWeather
-from supabase_backend import SupabaseAuthenticator, SupabaseClient, SupabaseError, SupabaseOutageStore, SupabasePatientStore
+from supabase_backend import (SupabaseAuthenticator, SupabaseClient, SupabaseError, SupabaseOutageStore, SupabasePatientStore,
+                              SupabaseUnreachable)
 
 HERE = Path(__file__).parent
 STATIC = HERE / "static"
@@ -46,6 +51,7 @@ LOOPBACK_ADDRESSES = {"127.0.0.1", "::1"}
 FIRMWARE_PATTERN = re.compile(r"^[A-Za-z0-9._+-]{1,32}$")
 MAX_UPTIME_SECONDS = 10 * 365 * 24 * 3600
 HISTORY_DAYS_DEFAULT, HISTORY_DAYS_MAX = 30, 365
+STARTUP_LOAD_ATTEMPTS, STARTUP_RETRY_SECONDS = 4, 5
 SMS_REPLIES = {
     ReplyResult.ACKNOWLEDGED: "Thanks. You're marked as responding, so we've stopped alerting the rest of the call list.",
     ReplyResult.AMBIGUOUS: "You're on the call list for more than one home without power. "
@@ -61,10 +67,10 @@ SECURITY_HEADERS = {
     "Referrer-Policy": "strict-origin-when-cross-origin",
     "Content-Security-Policy": (
         "default-src 'self'; "
-        "script-src 'self' https://unpkg.com; "
-        "style-src 'self' https://unpkg.com https://fonts.googleapis.com; "
+        "script-src 'self'; "
+        "style-src 'self' https://fonts.googleapis.com; "
         "font-src https://fonts.gstatic.com; "
-        "img-src 'self' data: https://*.tile.openstreetmap.org https://unpkg.com https://opengeo.ncep.noaa.gov; "
+        "img-src 'self' data: https://*.tile.openstreetmap.org https://opengeo.ncep.noaa.gov; "
         "connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
     ),
 }
@@ -92,6 +98,9 @@ class Handler(BaseHTTPRequestHandler):
     throttle: LoginThrottle
     public_url: str
     twilio_auth_token: str | None
+    respond_tokens: RespondTokens
+    geocoder: CensusGeocoder
+    county_token: str | None = None  # LIFELINE_COUNTY_TOKEN; the county page is off without it
     storm_mode: str = "off"            # on, off or demo; set by main()
     storm_check_seconds: int = 300
     routes: list[Route]
@@ -152,7 +161,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def static_asset(self, name: str) -> None:
         path = (STATIC / name).resolve()
-        if path.parent != STATIC.resolve() or not path.is_file():
+        if not path.is_relative_to(STATIC.resolve()) or not path.is_file():
             raise HttpError(HTTPStatus.NOT_FOUND, "not found")
         self._send_file(path)
 
@@ -168,7 +177,7 @@ class Handler(BaseHTTPRequestHandler):
             battery = None
         if not hmac.compare_digest(self.headers.get("X-Device-Token", ""), self.lifeline.device_token(device_id)):
             raise HttpError(HTTPStatus.UNAUTHORIZED, "bad device token")
-        self.lifeline.report(device_id, has_wall_power, battery, unit_health(data))
+        self.lifeline.report(device_id, has_wall_power, battery, unit_health(data), sensor_readings(data), button_event(data))
         self._send_json(HTTPStatus.OK, {"ok": True})
 
     def api_sms_inbound(self) -> None:
@@ -185,6 +194,29 @@ class Handler(BaseHTTPRequestHandler):
         outcome = self.lifeline.acknowledge_by_reply(sender, params.get("Body", ""))
         reply = SMS_REPLIES[outcome.result]
         self._send(HTTPStatus.OK, f"<Response><Message>{reply}</Message></Response>".encode(), "application/xml")
+
+    def api_respond(self, token: str) -> None:
+        """The "I'm responding" button in a push alert. The signed token is the credential,
+        so no session or JSON body is needed; a wrong or stale token changes nothing."""
+        target = self.respond_tokens.verify(token)
+        if target is None:
+            raise HttpError(HTTPStatus.NOT_FOUND, "This button is no longer valid.")
+        acknowledged = self.lifeline.respond_by_button(*target)
+        self._send_json(HTTPStatus.OK, {"acknowledged": acknowledged})
+
+    # ---- county emergency management ----------------------------------------
+
+    def page_county(self, token: str) -> None:
+        self._require_county(token)
+        self._send_file(STATIC / "county.html")
+
+    def api_county(self, token: str) -> None:
+        self._require_county(token)
+        self._send_json(HTTPStatus.OK, {"homes": self.lifeline.county_view()})
+
+    def _require_county(self, token: str) -> None:
+        if not self.county_token or not hmac.compare_digest(token, self.county_token):
+            raise HttpError(HTTPStatus.NOT_FOUND, "not found")
 
     # ---- families -----------------------------------------------------------
 
@@ -224,7 +256,8 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.OK, {"ok": True}, cookie=self._session_cookie("", expire=True))
 
     def api_me(self) -> None:
-        self._send_json(HTTPStatus.OK, {"email": self._staff().email})
+        county_link = f"{self.public_url}/county/{self.county_token}" if self.county_token else None
+        self._send_json(HTTPStatus.OK, {"email": self._staff().email, "county_link": county_link})
 
     # ---- staff: live board and roster ---------------------------------------
 
@@ -234,6 +267,17 @@ class Handler(BaseHTTPRequestHandler):
     def api_staff_ack(self, device_id: str) -> None:
         by = f"{self._staff().email} (agency)"
         self._send_json(HTTPStatus.OK, {"acknowledged": self.lifeline.acknowledge(device_id, by)})
+
+    def api_geocode(self) -> None:
+        address = self._json_body().get("address")
+        if not isinstance(address, str) or not address.strip() or len(address) > MAX_ADDRESS_LENGTH:
+            raise HttpError(HTTPStatus.BAD_REQUEST, "Enter the home address first.")
+        try:
+            matches = self.geocoder.locate(address.strip())
+        except GeocoderUnavailable as error:
+            log.warning("%s", error)
+            raise HttpError(HTTPStatus.BAD_GATEWAY, "The address lookup service is unavailable. Enter the location by hand.") from None
+        self._send_json(HTTPStatus.OK, {"matches": [{"address": m.address, "lat": m.lat, "lon": m.lon} for m in matches[:5]]})
 
     def api_list_patients(self) -> None:
         self._send_json(HTTPStatus.OK, {"patients": [self._staff_view(p) for p in self.lifeline.roster()]})
@@ -373,16 +417,19 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt: str, *args) -> None:
         # Request lines contain family-link tokens; keep them out of logs.
-        log.debug("%s %s", self.address_string(), re.sub(r"/(s|api/family)/[^/ ]+", r"/\1/<link>", fmt % args))
+        log.debug("%s %s", self.address_string(), re.sub(r"/(s|api/family|county|api/county|api/respond)/[^/ ]+", r"/\1/<link>", fmt % args))
 
 
 Handler.routes = [
     Route("GET", r"/", Handler.page_platform),
     Route("GET", r"/login", Handler.page_login),
     Route("GET", r"/s/([A-Za-z0-9_-]{16,})", Handler.page_family),
-    Route("GET", r"/static/([A-Za-z0-9_.-]+)", Handler.static_asset),
+    Route("GET", r"/county/([A-Za-z0-9_-]{32,})", Handler.page_county),
+    Route("GET", r"/api/county/([A-Za-z0-9_-]{32,})", Handler.api_county),
+    Route("GET", r"/static/((?:images/)?[A-Za-z0-9_-][A-Za-z0-9_.-]*)", Handler.static_asset),
     Route("POST", r"/api/report", Handler.api_report),
     Route("POST", r"/api/sms-inbound", Handler.api_sms_inbound),
+    Route("POST", r"/api/respond/([A-Za-z0-9_-]{8,200}\.[A-Za-z0-9_-]{10,40})", Handler.api_respond),
     Route("GET", r"/api/family/([A-Za-z0-9_-]{16,})", Handler.api_family_status),
     Route("POST", r"/api/family/([A-Za-z0-9_-]{16,})/ack", Handler.api_family_ack),
     Route("POST", r"/api/login", Handler.api_login),
@@ -393,6 +440,7 @@ Handler.routes = [
     Route("GET", r"/api/weather-map", Handler.api_weather_map, staff_only=True),
     Route("GET", r"/api/history", Handler.api_history, staff_only=True),
     Route("GET", r"/api/history\.csv", Handler.api_history_csv, staff_only=True),
+    Route("POST", r"/api/geocode", Handler.api_geocode, staff_only=True),
     Route("GET", r"/api/patients", Handler.api_list_patients, staff_only=True),
     Route("POST", r"/api/patients", Handler.api_add_patient, staff_only=True),
     Route("PUT", r"/api/patients/([a-z0-9-]+)", Handler.api_update_patient, staff_only=True),
@@ -416,6 +464,26 @@ def unit_health(data: dict) -> UnitHealth:
         firmware=firmware if isinstance(firmware, str) and FIRMWARE_PATTERN.match(firmware) else None,
         uptime_s=uptime if _is_int(uptime) and 0 <= uptime <= MAX_UPTIME_SECONDS else None,
     )
+
+
+def sensor_readings(data: dict) -> SensorReadings:
+    """Optional sensors; out-of-range values are dropped like the health extras."""
+    amps, temp = data.get("load_amps"), data.get("room_temp_f")
+    return SensorReadings(
+        load_amps=float(amps) if _is_number(amps) and 0 <= amps <= 100 else None,
+        room_temp_f=float(temp) if _is_number(temp) and -40 <= temp <= 140 else None,
+    )
+
+
+def button_event(data: dict) -> Button | None:
+    try:
+        return Button(data.get("event"))
+    except ValueError:
+        return None
+
+
+def _is_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 def _is_int(value: object) -> bool:
@@ -476,6 +544,12 @@ def _incident_type(incident: Outage) -> str:
         return "Power outage"
     if incident.kind is IncidentKind.SILENT:
         return "Unit silent"
+    if incident.kind is IncidentKind.MACHINE:
+        return "Machine stopped"
+    if incident.kind is IncidentKind.HELP:
+        return "Help button"
+    if incident.kind is IncidentKind.TEMPERATURE:
+        return incident.detail
     return f"Storm notice: {incident.detail}"
 
 
@@ -510,15 +584,60 @@ def build_backend() -> tuple[PatientStore, OutageStore, StaffAuthenticator, str]
             SharedPasswordAuthenticator(password), f"local files {patients_file.name}, {outages_file.name}")
 
 
+def build_sessions() -> Sessions:
+    secret = os.environ.get("LIFELINE_SESSION_SECRET")
+    if not secret:
+        log.warning("LIFELINE_SESSION_SECRET is not set; staff will have to sign in again after a restart")
+        secret = secrets.token_urlsafe(32)
+    try:
+        return Sessions(secret)
+    except ValueError as error:
+        raise SystemExit(str(error))
+
+
+def build_respond_tokens() -> RespondTokens:
+    secret = os.environ.get("LIFELINE_RESPOND_SECRET")
+    if not secret:
+        # Works, but buttons in alerts sent before a restart stop working after it.
+        log.warning("LIFELINE_RESPOND_SECRET is not set; push buttons will not survive a restart")
+        secret = secrets.token_urlsafe(32)
+    try:
+        return RespondTokens(secret)
+    except ValueError as error:
+        raise SystemExit(str(error))
+
+
+def retry_while_unreachable(load, what: str):
+    """Startup reads ride out a short network drop instead of failing on the first timeout."""
+    for attempt in range(1, STARTUP_LOAD_ATTEMPTS + 1):
+        try:
+            return load()
+        except SupabaseUnreachable as error:
+            if attempt == STARTUP_LOAD_ATTEMPTS:
+                raise
+            log.warning("%s while loading %s; retrying in %d s (attempt %d of %d)",
+                        error, what, STARTUP_RETRY_SECONDS, attempt, STARTUP_LOAD_ATTEMPTS)
+            time.sleep(STARTUP_RETRY_SECONDS)
+
+
+def load_patients(store: PatientStore) -> list[Patient]:
+    try:
+        return retry_while_unreachable(store.list_all, "patients")
+    except SupabaseError as error:
+        raise SystemExit(f"Can't start: {error}. Check this computer's internet connection and try again.") from None
+
+
 def load_open_incidents(outages: OutageStore) -> list[Outage]:
     """Open incidents from before a restart. Without them, the next heartbeat from a unit
     still in an outage would open a new one and alert the first contact all over again."""
     try:
-        return outages.list_open()
+        return retry_while_unreachable(outages.list_open, "open incidents")
+    except SupabaseUnreachable as error:
+        log.error("%s. Started without restoring open incidents: alerts work, but an outage that was "
+                  "already open may alert its first contact again.", error)
     except SupabaseError as error:
-        log.error("%s. Alerts still work, but history and restart recovery are off until "
-                  "supabase/migrations/002_outages.sql has been run.", error)
-        return []
+        log.error("%s. History and restart recovery are off; has supabase/migrations/002_outages.sql been run?", error)
+    return []
 
 
 def build_notifier() -> Notifier:
@@ -589,7 +708,7 @@ def main() -> None:
     open_incidents = load_open_incidents(outages)
     # The Monitor is fully restored before the ticker starts or the port opens.
     monitor = Monitor(
-        store.list_all(),
+        load_patients(store),
         escalate_after=timedelta(seconds=int(os.environ.get("ESCALATE_AFTER_SECONDS", "120"))),
         offline_after=timedelta(seconds=int(os.environ.get("OFFLINE_AFTER_SECONDS", "90"))),
         silent_alert_after=timedelta(seconds=int(os.environ.get("SILENT_ALERT_AFTER_SECONDS", "300"))),
@@ -597,13 +716,20 @@ def main() -> None:
         open_incidents=open_incidents,
     )
     storm, weather = build_storm_watch(open_incidents)
-    lifeline = Lifeline(monitor, store, build_notifier(), outages, storm, weather)
+    respond_tokens = build_respond_tokens()
+    lifeline = Lifeline(monitor, store, build_notifier(), outages, storm, weather,
+                        respond_link=lambda incident_id, index: f"{public_url}/api/respond/{respond_tokens.token(incident_id, index)}")
 
     Handler.lifeline = lifeline
     Handler.authenticator = authenticator
-    Handler.sessions = Sessions()
+    Handler.sessions = build_sessions()
     Handler.throttle = LoginThrottle()
     Handler.public_url = public_url
+    Handler.respond_tokens = respond_tokens
+    Handler.geocoder = CensusGeocoder()
+    Handler.county_token = os.environ.get("LIFELINE_COUNTY_TOKEN") or None
+    if Handler.county_token and len(Handler.county_token) < 32:
+        raise SystemExit("LIFELINE_COUNTY_TOKEN must be at least 32 random characters")
     Handler.twilio_auth_token = None
     if os.environ.get("LIFELINE_NOTIFIER") == "twilio":
         if not public_url.startswith("https://"):

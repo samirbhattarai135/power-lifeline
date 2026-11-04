@@ -54,6 +54,33 @@ class Contact:
         return any(word in self.role.lower() for word in AGENCY_ROLE_WORDS)
 
 
+MAX_PLAN_TEXT_LENGTH = 600
+MIN_RUNNING_AMPS, MAX_RUNNING_AMPS = 0.05, 30.0
+
+
+@dataclass(frozen=True)
+class EmergencyPlan:
+    """What the family should do when the power goes out. Every part is optional;
+    written by the agency, shown on the family page during outages and storms."""
+    supplies: str = ""        # e.g. "2 oxygen tanks in the hall closet, spare battery charged"
+    place_name: str = ""      # nearest place with power: hospital, shelter, relative
+    place_address: str = ""
+    place_phone: str = ""
+    steps: str = ""           # the agency's instructions, one per line
+
+    def __post_init__(self) -> None:
+        for label, value in (("Backup supplies", self.supplies), ("Place name", self.place_name),
+                             ("Place address", self.place_address), ("Place phone", self.place_phone),
+                             ("Steps", self.steps)):
+            if not isinstance(value, str):
+                raise InvalidPatient(f"{label} must be text")
+            if len(value) > MAX_PLAN_TEXT_LENGTH:
+                raise InvalidPatient(f"{label} must be at most {MAX_PLAN_TEXT_LENGTH} characters")
+
+    def is_empty(self) -> bool:
+        return not any((self.supplies, self.place_name, self.place_address, self.place_phone, self.steps))
+
+
 @dataclass(frozen=True)
 class Patient:
     device_id: str
@@ -67,6 +94,8 @@ class Patient:
     backup_minutes: int
     acuity: int  # 1 = most critical
     contacts: tuple[Contact, ...]  # alerted in this order until someone acknowledges
+    plan: EmergencyPlan = field(default_factory=EmergencyPlan)
+    running_amps_min: float | None = None  # with a current clamp: below this while powered, the machine stopped
 
     def __post_init__(self) -> None:
         if not DEVICE_ID_PATTERN.match(self.device_id):
@@ -83,6 +112,8 @@ class Patient:
             raise InvalidPatient("Acuity must be 1, 2 or 3")
         if not 1 <= len(self.contacts) <= MAX_CONTACTS:
             raise InvalidPatient(f"Add between 1 and {MAX_CONTACTS} contacts")
+        if self.running_amps_min is not None and not MIN_RUNNING_AMPS <= self.running_amps_min <= MAX_RUNNING_AMPS:
+            raise InvalidPatient(f"Running current must be between {MIN_RUNNING_AMPS} and {MAX_RUNNING_AMPS:g} amps")
 
 
 
@@ -91,12 +122,39 @@ class Patient:
 class Notification:
     contact: Contact
     message: str
+    # Set on power-loss alerts so the delivery layer can offer a one-tap "I'm responding":
+    # which incident, and which entry in its alerted list this notification is.
+    incident_id: str = ""
+    alert_index: int = -1
+    respond_url: str | None = None  # filled in by the service, never by the rules here
 
 
 class IncidentKind(Enum):
     POWER = "power"    # wall power lost at the patient's home
     SILENT = "silent"  # the unit stopped reporting: its Wi-Fi, or its own battery, may be down
     STORM = "storm"    # a storm notice sent before any outage (see storm.py)
+    MACHINE = "machine"          # the equipment stopped drawing current although the power is on
+    HELP = "help"                # someone pressed the help button on the unit
+    TEMPERATURE = "temperature"  # the room has been dangerously hot or cold for a while
+
+
+# Emergencies share one escalation slot per home: alerted in order, acknowledged, ended.
+# Everything else is an advisory: told once to care staff, closed when it clears.
+EMERGENCY_KINDS = (IncidentKind.POWER, IncidentKind.MACHINE, IncidentKind.HELP)
+
+
+class Button(Enum):
+    ACK = "ack"    # short press: someone at home has it in hand
+    HELP = "help"  # long press: the patient needs someone now
+
+
+AT_HOME = "Someone at home (unit button)"
+
+# ---- thresholds agreed for the demo; revisit with the agency for real patients --------------
+MACHINE_STOPPED_AFTER = timedelta(seconds=60)  # how long below running current before alerting
+ROOM_TOO_HOT_F = 90.0
+ROOM_TOO_COLD_F = 55.0
+ROOM_ALERT_AFTER = timedelta(minutes=10)       # how long out of range before alerting
 
 
 @dataclass(frozen=True)
@@ -147,6 +205,13 @@ class Outage:
         return list(dict.fromkeys(a.name for a in self.alerted))
 
 
+@dataclass(frozen=True)
+class SensorReadings:
+    """Optional sensors on the unit; None when not fitted or not reported."""
+    load_amps: float | None = None     # current clamp on the equipment's cord
+    room_temp_f: float | None = None
+
+
 @dataclass
 class Unit:
     patient: Patient
@@ -154,8 +219,12 @@ class Unit:
     battery_percent: int | None = None
     last_seen: datetime | None = None
     health: UnitHealth = field(default_factory=UnitHealth)
-    outage: Outage | None = None
+    readings: SensorReadings = field(default_factory=SensorReadings)
+    outage: Outage | None = None   # the open emergency, any of EMERGENCY_KINDS
     silent: Outage | None = None
+    room: Outage | None = None     # open temperature advisory
+    low_current_since: datetime | None = None
+    room_out_of_range_since: datetime | None = None
 
 
 class UnknownDevice(Exception):
@@ -174,7 +243,9 @@ class ReplyOutcome:
     device_id: str | None = None
 
 
-REPLY_SUFFIX = "(text reply)"  # marks an acknowledgment that came from someone on the call list
+REPLY_SUFFIX = "(text reply)"   # an acknowledgment from someone on the call list, by text...
+BUTTON_SUFFIX = "(push button)"  # ...or by the button in their push notification
+CALL_LIST_SUFFIXES = (REPLY_SUFFIX, BUTTON_SUFFIX)
 REPLY_PATTERN = re.compile(r"^\s*OK\W*(\d{4})?\b", re.IGNORECASE)  # "OK", "ok 4821", "OK4821"; not "okay"
 
 
@@ -238,22 +309,28 @@ class Monitor:
     # ---- device reports and escalation ---------------------------------
 
     def report(self, device_id: str, has_wall_power: bool, battery_percent: int | None,
-               now: datetime, health: UnitHealth | None = None) -> list[Notification]:
+               now: datetime, health: UnitHealth | None = None, readings: SensorReadings | None = None,
+               button: Button | None = None) -> list[Notification]:
         unit = self._unit(device_id)
         unit.last_seen = now
         unit.battery_percent = battery_percent
         unit.has_wall_power = has_wall_power
         if health is not None:
             unit.health = health
+        if readings is not None:
+            unit.readings = readings
 
         notifications = []
         if unit.silent is not None:
             # A power-loss alert below already tells people the unit is back; don't send two.
             notifications += self._end_silence(unit, now, announce=has_wall_power)
-        if not has_wall_power and unit.outage is None:
-            notifications += self._start_outage(unit, now)
-        elif has_wall_power and unit.outage is not None:
-            notifications += self._end_outage(unit, now)
+        notifications += self._check_power(unit, now)
+        notifications += self._check_machine(unit, now)
+        notifications += self._check_room(unit, now)
+        if button is Button.HELP:
+            notifications += self._help_pressed(unit, now)
+        elif button is Button.ACK:
+            self.acknowledge(device_id, AT_HOME, now)
         return notifications
 
     def acknowledge(self, device_id: str, by: str, now: datetime) -> bool:
@@ -264,6 +341,9 @@ class Monitor:
         outage.acknowledged_by = by
         outage.acknowledged_at = now
         outage.next_escalation_at = None
+        if outage.kind is IncidentKind.HELP:
+            outage.ended_at = now  # a help call is over once someone has it
+            self._units[device_id].outage = None
         self._touch(outage)
         return True
 
@@ -288,6 +368,15 @@ class Monitor:
         name = next(a.name for a in unit.outage.alerted if a.phone == phone)
         self.acknowledge(unit.patient.device_id, f"{name} {REPLY_SUFFIX}", now)
         return ReplyOutcome(ReplyResult.ACKNOWLEDGED, unit.patient.device_id)
+
+    def acknowledge_by_button(self, incident_id: str, alert_index: int, now: datetime) -> bool:
+        """The "I'm responding" button in one alert. Works only while that outage is open
+        and unacknowledged; records the alerted person's name."""
+        unit = next((u for u in self._units.values() if u.outage and u.outage.id == incident_id), None)
+        if unit is None or not 0 <= alert_index < len(unit.outage.alerted):
+            return False
+        name = unit.outage.alerted[alert_index].name
+        return self.acknowledge(unit.patient.device_id, f"{name} {BUTTON_SUFFIX}", now)
 
     def tick(self, now: datetime) -> list[Notification]:
         notifications = []
@@ -320,12 +409,63 @@ class Monitor:
             raise UnknownDevice(device_id)
         return unit
 
-    def _start_outage(self, unit: Unit, now: datetime) -> list[Notification]:
+    def _check_power(self, unit: Unit, now: datetime) -> list[Notification]:
+        emergency = unit.outage
+        if not unit.has_wall_power:
+            if emergency is not None and emergency.kind is IncidentKind.MACHINE:
+                # It stopped because the power went: one power outage, not two incidents.
+                self._close(unit, now)
+                emergency = None
+            return self._start_emergency(unit, IncidentKind.POWER, now) if emergency is None else []
+        if emergency is not None and emergency.kind is IncidentKind.POWER:
+            return self._end_outage(unit, now)
+        return []
+
+    def _check_machine(self, unit: Unit, now: datetime) -> list[Notification]:
+        threshold, amps = unit.patient.running_amps_min, unit.readings.load_amps
+        if threshold is None or amps is None or not unit.has_wall_power:
+            unit.low_current_since = None
+            return []
+        if amps >= threshold:
+            unit.low_current_since = None
+            if unit.outage is not None and unit.outage.kind is IncidentKind.MACHINE:
+                return self._end_outage(unit, now)
+            return []
+        unit.low_current_since = unit.low_current_since or now
+        if unit.outage is None and now - unit.low_current_since >= MACHINE_STOPPED_AFTER:
+            return self._start_emergency(unit, IncidentKind.MACHINE, now)
+        return []
+
+    def _help_pressed(self, unit: Unit, now: datetime) -> list[Notification]:
+        """Everyone on the list at once: a person asking for help shouldn't wait for escalation."""
+        if unit.outage is None:
+            self._start_emergency(unit, IncidentKind.HELP, now, alert_first=False)
+        outage = unit.outage
+        outage.next_escalation_at = None
+        outage.escalation_step = len(unit.patient.contacts)
+        message = self._help_message(unit, outage)
+        notifications = []
+        for contact in unit.patient.contacts:
+            if not outage.was_alerted(contact.phone) or outage.kind is not IncidentKind.HELP:
+                outage.alerted.append(Alerted(contact.name, contact.role, contact.phone, now))
+                notifications.append(Notification(contact, message, incident_id=outage.id, alert_index=len(outage.alerted) - 1))
+        self._touch(outage)
+        return notifications
+
+    def _start_emergency(self, unit: Unit, kind: IncidentKind, now: datetime,
+                         alert_first: bool = True) -> list[Notification]:
         p = unit.patient
-        unit.outage = Outage(id=self._new_id(), kind=IncidentKind.POWER, device_id=p.device_id,
+        unit.outage = Outage(id=self._new_id(), kind=kind, device_id=p.device_id,
                              patient_name=p.name, equipment=p.equipment, started_at=now,
                              reply_code=self._unused_reply_code(), next_escalation_at=now + self._escalate_after)
-        return [self._alert(unit, p.contacts[0], unit.outage, now)]
+        self._touch(unit.outage)
+        return [self._alert(unit, p.contacts[0], unit.outage, now)] if alert_first else []
+
+    def _close(self, unit: Unit, now: datetime) -> None:
+        unit.outage.ended_at = now
+        unit.outage.next_escalation_at = None
+        self._touch(unit.outage)
+        unit.outage = None
 
     def _escalate(self, unit: Unit, now: datetime) -> list[Notification]:
         outage = unit.outage
@@ -342,23 +482,33 @@ class Monitor:
 
     def _end_outage(self, unit: Unit, now: datetime) -> list[Notification]:
         outage = unit.outage
-        outage.ended_at = now
-        outage.next_escalation_at = None
-        self._touch(outage)
-        unit.outage = None
+        self._close(unit, now)
         minutes = int((now - outage.started_at).total_seconds() // 60)
-        message = f"Lifeline: Power is back on at {unit.patient.name}'s home after {minutes} min."
-        return [Notification(c, message) for c in unit.patient.contacts if outage.was_alerted(c.phone)]
+        p = unit.patient
+        message = (f"Lifeline: Power is back on at {p.name}'s home after {minutes} min." if outage.kind is IncidentKind.POWER
+                   else f"Lifeline: {p.name}'s {p.equipment.lower()} is running again.")
+        return [Notification(c, message) for c in p.contacts if outage.was_alerted(c.phone)]
 
     def _alert(self, unit: Unit, contact: Contact, outage: Outage, now: datetime) -> Notification:
         outage.alerted.append(Alerted(contact.name, contact.role, contact.phone, now))
         self._touch(outage)
         p = unit.patient
         left = self._backup_left(p, outage, now)
-        message = (f"Lifeline alert: Power is out at {p.name}'s home, {p.address}. "
-                   f"{p.equipment} backup about {left} min. Reply OK {outage.reply_code} if you're responding. "
+        if outage.kind is IncidentKind.MACHINE:
+            what = (f"{p.name}'s {p.equipment.lower()} has stopped at {p.address}, though the power is on. "
+                    f"Switch to backup now; backup about {left} min.")
+        elif outage.kind is IncidentKind.HELP:
+            return Notification(contact, self._help_message(unit, outage), incident_id=outage.id, alert_index=len(outage.alerted) - 1)
+        else:
+            what = f"Power is out at {p.name}'s home, {p.address}. {p.equipment} backup about {left} min."
+        message = (f"Lifeline alert: {what} Reply OK {outage.reply_code} if you're responding. "
                    f"Live status: {self._status_link(p)}")
-        return Notification(contact, message)
+        return Notification(contact, message, incident_id=outage.id, alert_index=len(outage.alerted) - 1)
+
+    def _help_message(self, unit: Unit, outage: Outage) -> str:
+        p = unit.patient
+        return (f"Lifeline alert: The help button was pressed at {p.name}'s home, {p.address}. "
+                f"Reply OK {outage.reply_code} if you're responding. Live status: {self._status_link(p)}")
 
     def _unused_reply_code(self) -> str:
         """Codes must be unique among open outages or "OK <code>" would be ambiguous again."""
@@ -398,6 +548,39 @@ class Monitor:
         message = f"Lifeline: The power unit at {unit.patient.name}'s home is reporting again, and the power is on."
         return [Notification(c, message) for c in unit.patient.contacts if silent.was_alerted(c.phone)]
 
+    # ---- internals: room temperature ---------------------------------------------
+
+    def _check_room(self, unit: Unit, now: datetime) -> list[Notification]:
+        temp = unit.readings.room_temp_f
+        out_of_range = temp is not None and not ROOM_TOO_COLD_F <= temp <= ROOM_TOO_HOT_F
+        if not out_of_range:
+            unit.room_out_of_range_since = None
+            return self._end_room(unit, now) if unit.room is not None and temp is not None else []
+        unit.room_out_of_range_since = unit.room_out_of_range_since or now
+        if unit.room is not None or now - unit.room_out_of_range_since < ROOM_ALERT_AFTER:
+            return []
+        p = unit.patient
+        hot = temp > ROOM_TOO_HOT_F
+        unit.room = Outage(id=self._new_id(), kind=IncidentKind.TEMPERATURE, device_id=p.device_id, patient_name=p.name,
+                           equipment=p.equipment, started_at=unit.room_out_of_range_since,
+                           detail=f"Room {'too hot' if hot else 'too cold'}: {round(temp)}°F")
+        message = (f"Lifeline: The room at {p.name}'s home is {round(temp)}°F, "
+                   f"{'dangerously hot' if hot else 'dangerously cold'} for someone on {p.equipment.lower()}. "
+                   f"Please check on {p.name}. Live status: {self._status_link(p)}")
+        recipients = [c for c in p.contacts if c.is_care_staff()] or [p.contacts[0]]
+        for contact in recipients:
+            unit.room.alerted.append(Alerted(contact.name, contact.role, contact.phone, now))
+        self._touch(unit.room)
+        return [Notification(c, message) for c in recipients]
+
+    def _end_room(self, unit: Unit, now: datetime) -> list[Notification]:
+        room = unit.room
+        room.ended_at = now
+        self._touch(room)
+        unit.room = None
+        message = f"Lifeline: The room at {unit.patient.name}'s home is back to a safe temperature."
+        return [Notification(c, message) for c in unit.patient.contacts if room.was_alerted(c.phone)]
+
     # ---- internals: persistence ----------------------------------------------------
 
     def _touch(self, incident: Outage) -> None:
@@ -408,10 +591,12 @@ class Monitor:
         unit = self._units.get(incident.device_id)
         if unit is None or incident.ended_at is not None:
             return  # patient removed since, or already over
-        if incident.kind is IncidentKind.POWER:
+        if incident.kind in EMERGENCY_KINDS:
             unit.outage = incident
         elif incident.kind is IncidentKind.SILENT:
             unit.silent = incident
+        elif incident.kind is IncidentKind.TEMPERATURE:
+            unit.room = incident
         # Storm notices belong to StormWatch, which restores its own.
 
     # ---- internals: read model ------------------------------------------------------
@@ -448,6 +633,10 @@ class Monitor:
             "firmware": unit.health.firmware,
             "uptime_s": unit.health.uptime_s,
             "silent_alert_sent": unit.silent is not None,
+            "emergency": outage.kind.value if outage else None,
+            "load_amps": unit.readings.load_amps,
+            "room_temp_f": unit.readings.room_temp_f,
+            "room_alert": unit.room.detail if unit.room else None,
             "outage_started": outage.started_at.isoformat() if outage else None,
             "backup_minutes_left": self._backup_left(p, outage, now) if outage else None,
             "acknowledged_by": outage.acknowledged_by if outage else None,

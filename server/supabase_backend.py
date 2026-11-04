@@ -25,6 +25,10 @@ class SupabaseError(RuntimeError):
     pass
 
 
+class SupabaseUnreachable(SupabaseError):
+    """The network failed (connect, TLS handshake or a read timing out); worth retrying."""
+
+
 class SupabaseClient:
     def __init__(self, project_url: str, secret_key: str):
         if not project_url.startswith("https://"):
@@ -52,7 +56,9 @@ class SupabaseClient:
             except ValueError:
                 return error.code, {"message": raw[:200].decode(errors="replace")}
         except urllib.error.URLError as error:
-            raise SupabaseError(f"cannot reach Supabase: {error.reason}") from error
+            raise SupabaseUnreachable(f"cannot reach Supabase: {error.reason}") from error
+        except (TimeoutError, OSError) as error:  # a timeout mid-response isn't wrapped in URLError
+            raise SupabaseUnreachable(f"cannot reach Supabase: {error}") from error
 
 
 class SupabasePatientStore:
