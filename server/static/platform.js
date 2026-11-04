@@ -1,3 +1,4 @@
+import { createBoardMap } from "./map.js";
 import { ApiError, api, el, clockTime, dateTime, durationText, hazardText, listNames, minutesSince, plural, secondsAgo, stateOf, uptimeText, withButton } from "./common.js";
 
 const BOARD_REFRESH_MS = 2000;
@@ -20,7 +21,14 @@ document.getElementById("signout").addEventListener("click", async () => {
   await api("POST", "/api/logout", {});
   location.assign("/login");
 });
-guarded(api("GET", "/api/me")).then(({ email }) => { document.getElementById("who").textContent = email; });
+guarded(api("GET", "/api/me")).then(({ email, county_link }) => {
+  document.getElementById("who").textContent = email;
+  if (county_link) {
+    document.getElementById("county-share").replaceChildren(
+      copyRow("Live list for county emergency management", county_link, false),
+      el("p", { class: "hint muted" }, "Read only: who has no power, how much backup they have left, and whether anyone is responding. No phone numbers. Share it only with the county's emergency managers."));
+  }
+});
 
 // ---- views ---------------------------------------------------------------------
 
@@ -42,24 +50,20 @@ function showView() {
   if (name === "patients") loadRoster();
   else if (name === "history") loadHistory();
   else if (name === "units") renderUnits();
-  else map.invalidateSize();
+  else boardMap.resize();
 }
 window.addEventListener("hashchange", showView);
 
 // ---- live board ----------------------------------------------------------------
 
-// Zoomed out enough to see weather coming, not just the streets around each home.
-const REGIONAL_ZOOM = 9;
-const map = L.map("map", { zoomControl: true }).setView(MAP_CENTER, REGIONAL_ZOOM);
-let mapFitted = false;
-L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-  { attribution: "© OpenStreetMap contributors", className: "basemap-tiles" }).addTo(map);
-const markers = new Map();
-const tempLabels = new Map();
-const tokens = getComputedStyle(document.documentElement);
-const markerColor = Object.fromEntries(
-  [["out", "--color-out"], ["acked", "--color-acked"], ["on", "--color-on"], ["quiet", "--color-quiet"]]
-    .map(([state, token]) => [state, tokens.getPropertyValue(token).trim()]));
+// The board's words for a unit: which emergency, if any, and whether someone has it.
+const EMERGENCY_LABEL = { power: "Power out", machine: "Machine stopped", help: "Help requested" };
+function labelFor(unit) {
+  const state = stateOf(unit);
+  if (unit.status !== "outage") return STATE_LABEL[state];
+  const what = EMERGENCY_LABEL[unit.emergency] ?? "Power out";
+  return unit.acknowledged_by ? `${what}, responding` : what;
+}
 
 function headline(units) {
   const out = units.filter((u) => u.status === "outage");
@@ -73,7 +77,8 @@ function headline(units) {
       el("p", {}, "We'll alert the call list the moment that changes."));
   } else {
     const responding = out.length - waiting.length;
-    node.replaceChildren(el("h1", {}, `${plural(out.length, "home")} without power`),
+    const allPower = out.every((u) => (u.emergency ?? "power") === "power");
+    node.replaceChildren(el("h1", {}, allPower ? `${plural(out.length, "home")} without power` : `${plural(out.length, "home")} need help now`),
       el("p", {}, waiting.length ? `${waiting.length} waiting for someone to respond. ${responding ? `${responding} being handled.` : ""}`
                                  : "Someone is responding to each one."));
   }
@@ -113,10 +118,15 @@ function unitRow(unit) {
     el("div", { class: "unit-head" },
       el("span", { class: "state-dot", "aria-hidden": "true" }),
       el("h2", {}, unit.name),
-      el("span", { class: "unit-state" }, STATE_LABEL[state])),
+      el("span", { class: "unit-state" }, labelFor(unit))),
     el("p", { class: "muted" }, `${unit.equipment}, acuity ${unit.acuity}. ${unit.address}`),
   ];
-  if (unit.status === "outage") {
+  if (unit.status === "outage" && unit.emergency === "help") {
+    lines.push(el("p", {}, `Help button pressed at ${clockTime(unit.outage_started)}. ` +
+      (unit.contacts_alerted.length ? `Alerted ${listNames(unit.contacts_alerted)}.` : "")));
+    if (unit.acknowledged_by) lines.push(el("p", {}, `Responding: ${unit.acknowledged_by}`));
+    else lines.push(respondButton(unit));
+  } else if (unit.status === "outage") {
     lines.push(
       el("p", { class: "unit-backup" }, el("strong", {}, String(unit.backup_minutes_left)), "minutes of backup left"),
       el("p", {}, `Out since ${clockTime(unit.outage_started)}${minutesSince(unit.outage_started) ? ` (${plural(minutesSince(unit.outage_started), "minute")})` : ", just now"}. ` +
@@ -145,122 +155,15 @@ function respondButton(unit) {
   return button;
 }
 
-function placeMarker(unit) {
-  const state = stateOf(unit);
-  const style = { radius: state === "out" ? 13 : 8, color: markerColor[state], fillColor: markerColor[state], fillOpacity: 0.85, weight: 2 };
-  let marker = markers.get(unit.device_id);
-  if (!marker) {
-    marker = L.circleMarker([unit.lat, unit.lon], style).addTo(map);
-    markers.set(unit.device_id, marker);
-  }
-  // A DOM node, not an HTML string: patient names are typed by staff.
-  const tip = el("div", { class: "map-tip" }, el("strong", {}, unit.name), el("div", {}, STATE_LABEL[state]),
-    unit.conditions ? el("div", {}, conditionsText(unit.conditions)) : null,
-    ...unit.hazards.map((h) => el("div", { class: "map-tip-hazard" }, hazardText(h))));
-  marker.setLatLng([unit.lat, unit.lon]).setStyle(style).setRadius(style.radius).bindTooltip(tip);
-}
-
-// ---- weather on the map ------------------------------------------------------------
-
+const boardMap = createBoardMap(document.getElementById("map"), { center: MAP_CENTER, labelFor });
 const WEATHER_REFRESH_MS = 60000;
-const RADAR_REFRESH_MS = 5 * 60000;
-// Colours close to the National Weather Service hazard map, so they read like any weather map.
-const WARNING_COLORS = {
-  "Tornado Warning": "#ff0000", "Severe Thunderstorm Warning": "#ffa500", "Extreme Wind Warning": "#ff8c00",
-  "High Wind Warning": "#daa520", "Ice Storm Warning": "#8b008b", "Winter Storm Warning": "#ff69b4",
-  "Blizzard Warning": "#ff4500", "Hurricane Warning": "#dc143c", "Tropical Storm Warning": "#b22222",
-  "Extreme Cold Warning": "#0000ff", "Extreme Heat Warning": "#c71585", "Excessive Heat Warning": "#c71585",
-  "Tornado Watch": "#c9b400", "Severe Thunderstorm Watch": "#db7093", "Hurricane Watch": "#ff00ff",
-  "Tropical Storm Watch": "#f08080", "Winter Storm Watch": "#4682b4", "High Wind Watch": "#b8860b",
-  "Wind Advisory": "#c19a6b", "Winter Weather Advisory": "#7b68ee", "Extreme Cold Watch": "#5f9ea0",
-};
-
-function warningColor(event) {
-  return WARNING_COLORS[event.replace(/ \(demo\)$/, "")] ?? "#d97706";
-}
-
-const radar = L.tileLayer.wms("https://opengeo.ncep.noaa.gov/geoserver/conus/conus_bref_qcd/ows", {
-  layers: "conus_bref_qcd", format: "image/png", transparent: true, opacity: 0.6,
-  attribution: "Weather: NOAA NWS",
-}).addTo(map);
-setInterval(() => radar.setParams({ refreshed: Date.now() }), RADAR_REFRESH_MS);
-
-const warningLayer = L.geoJSON(null, {
-  style: (feature) => {
-    const high = feature.properties.level === "high";
-    return { color: warningColor(feature.properties.event), weight: high ? 3 : 2, dashArray: high ? null : "6 5",
-             fillOpacity: high ? 0.16 : 0.07 };
-  },
-  onEachFeature: (feature, layer) => layer.bindTooltip(
-    el("div", { class: "map-tip" }, el("strong", {}, feature.properties.event), el("div", {}, `Until ${dateTime(feature.properties.ends)}`)),
-    { sticky: true }),
-}).addTo(map);
-
-L.control.layers(null, { "Weather radar": radar, "Warnings and watches": warningLayer },
-  { position: "topright", collapsed: matchMedia("(max-width: 640px)").matches }).addTo(map);
-
-const legend = L.control({ position: "bottomleft" });
-legend.onAdd = () => el("div", { class: "map-legend", id: "map-legend" });
-legend.addTo(map);
-
-function conditionsText(c) {
-  const parts = [];
-  if (c.temperature_f !== null) parts.push(`${c.temperature_f}°F`);
-  if (c.wind_mph !== null) parts.push(`wind ${c.wind_mph} mph${c.gust_mph ? `, gusts ${c.gust_mph}` : ""}`);
-  if (c.thunder_percent) parts.push(`${c.thunder_percent}% chance of thunder`);
-  return parts.join(", ");
-}
-
-const LABEL_MIN_GAP_PX = 44;
-
-// One temperature label per spot on screen: homes close together share the first label,
-// and every home's full conditions stay in its hover tooltip.
-function placeTemperatures(units) {
-  for (const label of tempLabels.values()) label.remove();
-  tempLabels.clear();
-  const placed = [];
-  for (const unit of units) {
-    const temperature = unit.conditions?.temperature_f;
-    if (temperature === null || temperature === undefined) continue;
-    const point = map.latLngToContainerPoint([unit.lat, unit.lon]);
-    if (placed.some((other) => other.distanceTo(point) < LABEL_MIN_GAP_PX)) continue;
-    placed.push(point);
-    const icon = L.divIcon({ className: "temp-label", html: `${Number(temperature)}°`, iconSize: null, iconAnchor: [-12, 9] });
-    tempLabels.set(unit.device_id, L.marker([unit.lat, unit.lon], { icon, interactive: false, keyboard: false }).addTo(map));
-  }
-}
-map.on("zoomend", () => placeTemperatures(lastUnits));
-
-function renderLegend(weather) {
-  const events = [...new Map(weather.areas.features.map((f) => [f.properties.event, f.properties.level])).entries()];
-  const node = document.getElementById("map-legend");
-  const swatch = (color, dashed) => el("span", { class: `swatch${dashed ? " is-dashed" : ""}`, style: `--swatch: ${color}` });
-  node.replaceChildren(
-    el("strong", {}, weather.mode === "demo" ? "Weather (demo storm)" : "Weather"),
-    el("div", { class: "legend-row legend-extra" }, el("span", { class: "radar-scale", "aria-hidden": "true" }), "Radar: light to heavy"),
-    ...(weather.mode === "off" ? [el("div", { class: "muted" }, "Storm Watch is off")]
-      : events.length ? events.map(([event, level]) => el("div", { class: "legend-row" }, swatch(warningColor(event), level !== "high"), event))
-      : [el("div", { class: "muted" }, "No warnings or watches near your homes")]),
-    weather.checked_at ? el("div", { class: "muted legend-extra" }, `Checked ${secondsAgo(weather.checked_at)}`) : null,
-  );
-}
 
 async function refreshWeather() {
   try {
-    const weather = await guarded(api("GET", "/api/weather-map"));
-    warningLayer.clearLayers();
-    warningLayer.addData(weather.areas);
-    renderLegend(weather);
+    boardMap.showWeather(await guarded(api("GET", "/api/weather-map")));
   } catch (error) {
-    if (!(error instanceof ApiError && error.status === 401)) {
-      document.getElementById("map-legend").replaceChildren(el("strong", {}, "Weather"), el("div", { class: "muted" }, "Weather unavailable, retrying"));
-    }
+    if (!(error instanceof ApiError && error.status === 401)) boardMap.weatherUnavailable();
   }
-}
-
-function dropStaleMarkers(units) {
-  const live = new Set(units.map((u) => u.device_id));
-  for (const [id, marker] of markers) if (!live.has(id)) { marker.remove(); markers.delete(id); }
 }
 
 let lastBoard = "";
@@ -279,14 +182,7 @@ async function refreshBoard() {
     stormBanner(units);
     announce(document.querySelector("#headline h1").textContent);
     document.getElementById("units").replaceChildren(...units.map(unitRow));
-    units.forEach(placeMarker);
-    dropStaleMarkers(units);
-    placeTemperatures(units);
-    if (!mapFitted && units.length) {
-      // Once, on first load: every home in view with room around it, then the user is in charge.
-      map.fitBounds(L.latLngBounds(units.map((u) => [u.lat, u.lon])).pad(1.5), { maxZoom: REGIONAL_ZOOM });
-      mapFitted = true;
-    }
+    boardMap.showUnits(units);
   } catch (error) {
     lastBoard = "";  // force a full redraw once the server answers again
     if (!(error instanceof ApiError && error.status === 401)) {
@@ -335,8 +231,10 @@ const historyDays = document.getElementById("history-days");
 historyDays.addEventListener("change", loadHistory);
 document.getElementById("history-print").addEventListener("click", () => window.print());
 
-const KIND_LABEL = { power: "Power outage", silent: "Unit silent", storm: "Storm notice" };
-const KIND_TAG = { power: "tag-out", silent: "", storm: "tag-storm" };
+const KIND_LABEL = { power: "Power outage", silent: "Unit silent", storm: "Storm notice", machine: "Machine stopped",
+                     help: "Help button", temperature: "Room temperature" };
+const KIND_TAG = { power: "tag-out", machine: "tag-out", help: "tag-out", silent: "", storm: "tag-storm", temperature: "tag-storm" };
+const ADVISORY_KINDS = new Set(["silent", "storm", "temperature"]);
 
 async function loadHistory() {
   const days = historyDays.value;
@@ -352,6 +250,7 @@ async function loadHistory() {
     return;
   }
   summary.textContent = historySummary(incidents, historyDays.selectedOptions[0].textContent.toLowerCase());
+  document.getElementById("history-kpis").replaceChildren(...responseTiles(incidents));
   if (!incidents.length) {
     body.replaceChildren(el("div", { class: "empty" },
       el("h2", {}, "Nothing to report"),
@@ -363,19 +262,42 @@ async function loadHistory() {
     el("tbody", {}, incidents.map(historyRow))));
 }
 
+const EMERGENCY_KINDS = new Set(["power", "machine", "help"]);
+
 function historySummary(incidents, period) {
-  const outages = incidents.filter((i) => i.kind === "power");
+  const outages = incidents.filter((i) => EMERGENCY_KINDS.has(i.kind));
   const silent = incidents.filter((i) => i.kind === "silent").length;
   const storms = incidents.filter((i) => i.kind === "storm").length;
   const silentNote = (silent ? ` ${plural(silent, "unit")} went silent.` : "") +
     (storms ? ` ${plural(storms, "storm notice")} sent ahead of bad weather.` : "");
-  if (!outages.length) return `No power outages in the ${period}.${silentNote}`;
+  if (!outages.length) return `No emergencies in the ${period}.${silentNote}`;
   const answered = outages.filter((i) => i.response_minutes !== null).map((i) => i.response_minutes).sort((a, b) => a - b);
   const median = answered.length ? answered[Math.floor((answered.length - 1) / 2)] : null;
   const response = answered.length
     ? `Someone responded to ${answered.length} of ${outages.length}, with a typical response time of ${durationText(median)}.`
     : "None acknowledged yet.";
-  return `${plural(outages.length, "power outage")} in the ${period}. ${response}${silentNote}`;
+  const count = `${outages.length} ${outages.length === 1 ? "emergency" : "emergencies"}`;
+  return `${count} in the ${period}. ${response}${silentNote}`;
+}
+
+const ANSWER_TARGET_MINUTES = 15;
+
+// The numbers an agency is judged on: how fast someone responds, and how often nobody does.
+function responseTiles(incidents) {
+  const outages = incidents.filter((i) => EMERGENCY_KINDS.has(i.kind));
+  if (!outages.length) return [];
+  const answered = outages.filter((i) => i.response_minutes !== null).map((i) => i.response_minutes).sort((a, b) => a - b);
+  const median = answered.length ? answered[Math.floor((answered.length - 1) / 2)] : null;
+  const onTime = answered.filter((m) => m <= ANSWER_TARGET_MINUTES).length;
+  const missed = outages.filter((i) => i.response_minutes === null && i.ended_at !== null).length;
+  const tile = (label, value, note) => el("div", { class: "kpi" },
+    el("p", { class: "kpi-label" }, label), el("p", { class: "kpi-value" }, value), note ? el("p", { class: "kpi-note" }, note) : null);
+  return [
+    tile("Emergencies", String(outages.length), "power outages, stopped machines and help calls"),
+    tile("Typical time to respond", median === null ? "None yet" : durationText(median), "median, from the first alert"),
+    tile(`Answered within ${ANSWER_TARGET_MINUTES} minutes`, `${onTime} of ${outages.length}`),
+    tile("Ended with nobody responding", String(missed), missed ? "check these call lists" : null),
+  ];
 }
 
 function historyRow(incident) {
@@ -385,7 +307,7 @@ function historyRow(incident) {
     el("td", { "data-label": "Patient" }, el("strong", {}, incident.patient_name), el("div", { class: "muted code" }, incident.device_id)),
     el("td", { "data-label": "What happened" },
       el("span", { class: `tag ${KIND_TAG[incident.kind]}` }, KIND_LABEL[incident.kind]),
-      el("div", { class: "muted" }, incident.kind === "storm" ? incident.detail : incident.equipment)),
+      el("div", { class: "muted" }, incident.detail || incident.equipment)),
     el("td", { class: "num", "data-label": "Lasted" },
       ongoing ? el("span", { class: "tag tag-ongoing" }, "Ongoing") : durationText(incident.duration_minutes)),
     el("td", { class: "cell-wide", "data-label": "Alerted" },
@@ -394,9 +316,9 @@ function historyRow(incident) {
 }
 
 function responseText(incident) {
-  if (incident.kind !== "power") return el("span", { class: "muted" }, "Not needed");
+  if (ADVISORY_KINDS.has(incident.kind)) return el("span", { class: "muted" }, "Not needed");
   if (incident.acknowledged_by) return `${incident.acknowledged_by} after ${durationText(incident.response_minutes)}`;
-  if (incident.ended_at === null) return "Waiting";
+  if (incident.ended_at === null && !incident.acknowledged_by) return "Waiting";
   return el("span", { class: "no-response" }, "No one responded");
 }
 
@@ -417,6 +339,14 @@ function signalCell(rssi) {
     `${label} (${rssi} dBm)`);
 }
 
+function sensorsText(unit) {
+  const parts = [];
+  if (unit.room_temp_f !== null) parts.push(`Room ${Math.round(unit.room_temp_f)}°F`);
+  if (unit.load_amps !== null) parts.push(`machine drawing ${unit.load_amps.toFixed(1)} A`);
+  if (unit.room_alert) parts.push(unit.room_alert);
+  return parts.length ? parts.join(", ") : el("span", { class: "muted" }, "None fitted");
+}
+
 function renderUnits() {
   const body = document.getElementById("units-body");
   if (!lastUnits.length) {
@@ -426,12 +356,13 @@ function renderUnits() {
   }
   const units = [...lastUnits].sort((a, b) => a.name.localeCompare(b.name));
   body.replaceChildren(el("table", { class: "stack-table" },
-    el("thead", {}, el("tr", {}, ["Patient", "Status", "Last report", "Wi-Fi", "Firmware", "Running for"].map((h) => el("th", { scope: "col" }, h)))),
+    el("thead", {}, el("tr", {}, ["Patient", "Status", "Last report", "Wi-Fi", "Sensors", "Firmware", "Running for"].map((h) => el("th", { scope: "col" }, h)))),
     el("tbody", {}, units.map((unit) => el("tr", {},
       el("td", { "data-label": "Patient" }, el("strong", {}, unit.name), el("div", { class: "muted code" }, unit.device_id)),
-      el("td", { "data-label": "Status" }, el("span", { class: `tag ${stateOf(unit) === "out" ? "tag-out" : ""}` }, STATE_LABEL[stateOf(unit)])),
+      el("td", { "data-label": "Status" }, el("span", { class: `tag ${stateOf(unit) === "out" ? "tag-out" : ""}` }, labelFor(unit))),
       el("td", { class: "num", "data-label": "Last report" }, unit.last_seen ? secondsAgo(unit.last_seen) : "Never"),
       el("td", { class: "cell-wide", "data-label": "Wi-Fi" }, signalCell(unit.rssi)),
+      el("td", { "data-label": "Sensors" }, sensorsText(unit)),
       el("td", { class: "code", "data-label": "Firmware" }, unit.firmware ?? "Unknown"),
       el("td", { class: "num", "data-label": "Running for" }, unit.uptime_s === null ? "Unknown" : uptimeText(unit.uptime_s)),
     )))));
@@ -446,6 +377,10 @@ panel.querySelector("[data-close]").addEventListener("click", () => panel.close(
 function field(label, control, hint, className = "field") {
   control.id ||= `f-${control.name}`;
   return el("div", { class: className }, el("label", { for: control.id }, label), control, hint ? el("p", { class: "hint" }, hint) : null);
+}
+
+function textarea(name, value = "", placeholder = "") {
+  return el("textarea", { class: "input textarea", name, rows: 3, placeholder, value: value ?? "" });
 }
 
 function input(name, value = "", props = {}) {
@@ -486,10 +421,10 @@ function openForm(patient) {
     error,
     field("Patient name", input("name", patient?.name, { required: true, autocomplete: "off" })),
     field("Home address", input("address", patient?.address, { required: true, autocomplete: "off" })),
+    locateRow(),
     el("div", { class: "grid-2" },
       field("Latitude", input("lat", patient?.lat, { inputmode: "decimal", required: true })),
       field("Longitude", input("lon", patient?.lon, { inputmode: "decimal", required: true }))),
-    el("p", { class: "hint muted" }, "Right-click the home in Google Maps to copy its latitude and longitude."),
     el("div", { class: "grid-2" },
       field("Equipment", input("equipment", patient?.equipment, { required: true, placeholder: "Oxygen concentrator" })),
       field("Backup minutes", input("backup_minutes", patient?.backup_minutes, { type: "number", min: 0, max: 2880, required: true }),
@@ -499,6 +434,19 @@ function openForm(patient) {
       editing ? field("Unit ID", input("device_id", patient.device_id, { disabled: true }), "Fixed once the unit is set up.")
               : field("Unit ID", input("device_id", "", { required: true, placeholder: "unit-07", pattern: "[a-z0-9-]{3,40}" }),
                   "Printed on the power unit.")),
+    el("fieldset", {},
+      el("legend", {}, "Emergency plan"),
+      el("p", { class: "hint muted" }, "Shown to the family when the power goes out or a storm is coming. All optional."),
+      field("Backup supplies", textarea("plan-supplies", patient?.plan?.supplies, "2 oxygen tanks in the hall closet; spare battery charged")),
+      el("div", { class: "grid-2" },
+        field("Nearest place with power", input("plan-place_name", patient?.plan?.place_name, { placeholder: "Forrest General Hospital" })),
+        field("Its phone", input("plan-place_phone", patient?.plan?.place_phone, { type: "tel" }))),
+      field("Its address", input("plan-place_address", patient?.plan?.place_address)),
+      field("What to do", textarea("plan-steps", patient?.plan?.steps, "1. Switch to the oxygen tank.\n2. Call the agency on-call line.\n3. If breathing is hard, call 911."))),
+    el("fieldset", {},
+      el("legend", {}, "Machine sensor"),
+      field("Running current, in amps", input("running_amps_min", patient?.running_amps_min, { inputmode: "decimal", placeholder: "Leave blank if no clamp is fitted" }),
+        "With a current clamp on the equipment's cord: below this, while the power is on, we alert that the machine has stopped.")),
     el("fieldset", {},
       el("legend", {}, "Call list"),
       el("p", { class: "hint muted" }, "We alert the first person right away, then the next one every few minutes until someone responds."),
@@ -535,6 +483,28 @@ function openForm(patient) {
   form.querySelector("input:not([disabled])").focus();
 }
 
+// Fills latitude and longitude from the address, so staff don't look them up by hand.
+function locateRow() {
+  const status = el("p", { class: "hint muted", "aria-live": "polite" }, "Or right-click the home in Google Maps to copy its latitude and longitude.");
+  const button = el("button", { class: "btn btn-quiet btn-small", type: "button" }, "Find location from address");
+  button.addEventListener("click", async () => {
+    const form = button.closest("form");
+    try {
+      const { matches } = await withButton(button, () => guarded(api("POST", "/api/geocode", { address: form.elements.address.value })));
+      if (!matches.length) {
+        status.textContent = "No match. Check the spelling, add the town and state, or enter the location by hand.";
+        return;
+      }
+      form.elements.lat.value = matches[0].lat.toFixed(5);
+      form.elements.lon.value = matches[0].lon.toFixed(5);
+      status.textContent = `Found ${matches[0].address}. Check it's the right home.`;
+    } catch (error) {
+      status.textContent = error.message;
+    }
+  });
+  return el("div", { class: "locate-row" }, button, status);
+}
+
 function readForm(form) {
   const value = (name) => form.elements[name].value.trim();
   const contacts = [...form.querySelectorAll(".contact-row")].map((row) => ({
@@ -550,6 +520,8 @@ function readForm(form) {
     device_id: value("device_id"), name: value("name"), address: value("address"),
     lat: Number(value("lat")), lon: Number(value("lon")), equipment: value("equipment"),
     backup_minutes: Number(value("backup_minutes")), acuity: Number(value("acuity")), contacts,
+    plan: Object.fromEntries(["supplies", "place_name", "place_address", "place_phone", "steps"].map((part) => [part, value(`plan-${part}`)])),
+    running_amps_min: value("running_amps_min") === "" ? null : Number(value("running_amps_min")),
   };
 }
 

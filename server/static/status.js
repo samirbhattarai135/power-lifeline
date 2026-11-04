@@ -13,6 +13,12 @@ const VERDICT = {
   quiet: "No signal from the unit",
 };
 
+function verdictFor(unit, state) {
+  if (unit.status === "outage" && unit.emergency === "machine") return `The ${unit.equipment.toLowerCase()} has stopped`;
+  if (unit.status === "outage" && unit.emergency === "help") return "Help was requested";
+  return VERDICT[state];
+}
+
 function firstName(fullName) {
   return fullName.replace(/\s*\(.*\)$/, "");
 }
@@ -63,6 +69,24 @@ function respondButton() {
   return button;
 }
 
+// The agency's plan: front and centre when it matters, folded away otherwise.
+function planSection(unit) {
+  const plan = unit.plan;
+  if (!plan) return null;
+  const urgent = unit.status === "outage" || unit.hazards.length > 0;
+  const parts = [];
+  if (plan.supplies) parts.push(el("div", { class: "plan-part" }, el("h3", {}, "Backup supplies"), el("p", { class: "plan-text" }, plan.supplies)));
+  if (plan.place_name || plan.place_address) {
+    parts.push(el("div", { class: "plan-part" }, el("h3", {}, "Nearest place with power"),
+      el("p", {}, el("strong", {}, plan.place_name)),
+      plan.place_address ? el("p", {}, plan.place_address) : null,
+      plan.place_phone ? el("p", {}, el("a", { href: `tel:${plan.place_phone.replace(/[^+\d]/g, "")}` }, plan.place_phone)) : null));
+  }
+  if (plan.steps) parts.push(el("div", { class: "plan-part" }, el("h3", {}, "What to do"), el("p", { class: "plan-text" }, plan.steps)));
+  if (urgent) return el("section", { class: "plan is-open" }, el("h2", {}, "Your emergency plan"), ...parts);
+  return el("details", { class: "plan" }, el("summary", {}, "Your emergency plan"), ...parts);
+}
+
 function stormNote(unit) {
   if (!unit.hazards.length) return null;
   const advice = unit.status === "outage" ? "" : " Charge backup batteries and check supplies now. If the power goes out, we'll alert the call list right away.";
@@ -87,19 +111,20 @@ function render(unit) {
   section.replaceChildren(...[
     el("h1", {}, `${firstName(unit.name)}'s home`),
     el("div", { class: `verdict is-${state}` },
-      el("div", { class: "verdict-line" }, el("span", { class: "state-dot", "aria-hidden": "true" }), el("h2", {}, VERDICT[state])),
+      el("div", { class: "verdict-line" }, el("span", { class: "state-dot", "aria-hidden": "true" }), el("h2", {}, verdictFor(unit, state))),
       ...details,
     ),
     whoKnows(unit),
     state === "out" ? respondButton() : null,
     stormNote(unit),
+    planSection(unit),
   ].filter(Boolean));
   section.className = `is-${state}`;
   section.hidden = false;
   loading.hidden = true;
-  document.title = `Lifeline: ${VERDICT[state]}`;
+  document.title = `Lifeline: ${verdictFor(unit, state)}`;
   const announcement = document.getElementById("announce");
-  if (announcement.textContent !== VERDICT[state]) announcement.textContent = VERDICT[state];
+  if (announcement.textContent !== verdictFor(unit, state)) announcement.textContent = verdictFor(unit, state);
 }
 
 function showError(error) {
