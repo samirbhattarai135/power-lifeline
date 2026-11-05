@@ -38,7 +38,8 @@ class SignInAccounts(Protocol):
     """Creating and changing the sign-in accounts themselves (roles live in access.py)."""
 
     def create(self, email: str, temporary_password: str) -> bool:
-        """Make a sign-in account. True if created, False if one already exists for this email."""
+        """Make the sign-in account, or take over an existing one, so that `temporary_password` is now
+        the only password that works for it. False when accounts aren't individual (shared password)."""
         ...
 
     def change_password(self, email: str, current_password: str, new_password: str) -> bool:

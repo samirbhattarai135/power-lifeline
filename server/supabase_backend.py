@@ -171,8 +171,33 @@ class SupabaseAuthenticator:
         if 200 <= status < 300:
             return True
         if status == 422 and _auth_error_code(body) == "email_exists":
-            return False
+            # Someone may have registered this email first with a password of their own (if
+            # public sign-up is on). Granting a role must not hand them access, so the
+            # existing account gets the admin's temporary password too and is confirmed.
+            self._reset_password(email, temporary_password)
+            return True
         raise SupabaseError(f"Supabase Auth could not create {email}: HTTP {status} {_auth_message(body)}")
+
+    def _reset_password(self, email: str, password: str) -> None:
+        user_id = self._user_id(email)
+        status, body = self._client.request("PUT", f"/auth/v1/admin/users/{urllib.parse.quote(user_id)}",
+                                            {"password": password, "email_confirm": True})
+        if not 200 <= status < 300:
+            raise SupabaseError(f"Supabase Auth could not reset the password for {email}: HTTP {status} {_auth_message(body)}")
+
+    def _user_id(self, email: str) -> str:
+        # ponytail: pages through all users; fine for an agency's staff list, add a lookup table past a few thousand.
+        for page in range(1, 100):
+            status, body = self._client.request("GET", f"/auth/v1/admin/users?page={page}&per_page=200")
+            users = body.get("users", []) if isinstance(body, dict) and 200 <= status < 300 else None
+            if users is None:
+                raise SupabaseError(f"Supabase Auth could not list users: HTTP {status} {_auth_message(body)}")
+            for user in users:
+                if (user.get("email") or "").lower() == email:
+                    return user["id"]
+            if len(users) < 200:
+                break
+        raise SupabaseError(f"Supabase Auth says {email} exists but it wasn't found in the user list")
 
     def change_password(self, email: str, current_password: str, new_password: str) -> bool:
         # Signing in again proves the current password and gives a token for the person's own account.
