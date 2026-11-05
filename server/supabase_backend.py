@@ -13,9 +13,10 @@ import urllib.request
 from datetime import datetime
 from typing import Any
 
+from access import Role, StaffAccount
 from domain import Outage, Patient
 from records import outage_from_record, outage_to_record, patient_from_record, patient_to_record
-from staff import StaffMember
+from staff import PasswordChangeRefused, StaffMember
 
 log = logging.getLogger("lifeline.supabase")
 TIMEOUT_SECONDS = 10
@@ -110,6 +111,36 @@ class SupabaseOutageStore:
         return [outage_from_record(row) for row in rows]
 
 
+class SupabaseStaffStore:
+    """Roles in the `staff_roles` table (migration 005). Accounts themselves stay in Supabase Auth."""
+    TABLE = "/rest/v1/staff_roles"
+
+    def __init__(self, client: SupabaseClient):
+        self._client = client
+
+    def list_all(self) -> list[StaffAccount]:
+        status, rows = self._client.request("GET", f"{self.TABLE}?select=email,role")
+        _expect(status, rows, "load staff roles")
+        return [StaffAccount(row["email"], Role(row["role"])) for row in rows]
+
+    def save(self, account: StaffAccount) -> None:
+        status, body = self._client.request("POST", self.TABLE, [{"email": account.email, "role": account.role.value}],
+                                            {"Prefer": "resolution=merge-duplicates,return=minimal"})
+        _expect(status, body, f"save the role for {account.email}")
+
+    def delete(self, email: str) -> None:
+        status, body = self._client.request("DELETE", f"{self.TABLE}?email=eq.{urllib.parse.quote(email)}")
+        _expect(status, body, f"remove {email}")
+
+
+def _auth_error_code(body: Any) -> str:
+    return str(body.get("error_code") or body.get("code") or "") if isinstance(body, dict) else ""
+
+
+def _auth_message(body: Any) -> str:
+    return str(body.get("msg") or body.get("message") or body.get("error_description") or "") if isinstance(body, dict) else ""
+
+
 def _expect(status: int, body: Any, action: str) -> None:
     if not 200 <= status < 300:
         detail = body.get("message") if isinstance(body, dict) else body
@@ -132,3 +163,29 @@ class SupabaseAuthenticator:
         if status >= 500:
             raise SupabaseError(f"Supabase Auth unavailable: HTTP {status}")
         return None
+
+    def create(self, email: str, temporary_password: str) -> bool:
+        # Admin API: confirmed at once, so no confirmation email and no public sign-up needed.
+        status, body = self._client.request("POST", "/auth/v1/admin/users",
+                                            {"email": email, "password": temporary_password, "email_confirm": True})
+        if 200 <= status < 300:
+            return True
+        if status == 422 and _auth_error_code(body) == "email_exists":
+            return False
+        raise SupabaseError(f"Supabase Auth could not create {email}: HTTP {status} {_auth_message(body)}")
+
+    def change_password(self, email: str, current_password: str, new_password: str) -> bool:
+        # Signing in again proves the current password and gives a token for the person's own account.
+        status, body = self._client.request("POST", "/auth/v1/token?grant_type=password",
+                                            {"email": email, "password": current_password})
+        if status >= 500:
+            raise SupabaseError(f"Supabase Auth unavailable: HTTP {status}")
+        if status != 200 or not isinstance(body, dict) or not body.get("access_token"):
+            return False
+        status, body = self._client.request("PUT", "/auth/v1/user", {"password": new_password},
+                                            {"Authorization": f"Bearer {body['access_token']}"})
+        if 200 <= status < 300:
+            return True
+        if status == 422:
+            raise PasswordChangeRefused(_auth_message(body) or "Supabase refused that password. Try a longer one.")
+        raise SupabaseError(f"Supabase Auth could not change the password: HTTP {status} {_auth_message(body)}")

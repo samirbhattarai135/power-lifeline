@@ -10,9 +10,10 @@ import tempfile
 from datetime import datetime
 from pathlib import Path
 
+from access import Role, StaffAccount
 from domain import Outage, Patient
 from records import outage_from_record, outage_to_record, patient_from_record, patient_to_record
-from staff import StaffMember
+from staff import PasswordChangeRefused, StaffMember
 
 
 class JsonFilePatientStore:
@@ -59,6 +60,23 @@ class JsonFileOutageStore:
         return [outage_from_record(r) for r in json.loads(self._path.read_text())]
 
 
+class JsonFileStaffStore:
+    def __init__(self, path: Path):
+        self._path = path
+
+    def list_all(self) -> list[StaffAccount]:
+        if not self._path.exists():
+            return []
+        return [StaffAccount(r["email"], Role(r["role"])) for r in json.loads(self._path.read_text())]
+
+    def save(self, account: StaffAccount) -> None:
+        accounts = {a.email: a for a in self.list_all()} | {account.email: account}
+        _write_json_atomically(self._path, [{"email": a.email, "role": a.role.value} for a in accounts.values()])
+
+    def delete(self, email: str) -> None:
+        _write_json_atomically(self._path, [{"email": a.email, "role": a.role.value} for a in self.list_all() if a.email != email])
+
+
 def _write_json_atomically(path: Path, data: list[dict]) -> None:
     # Write-then-rename so a crash mid-write never leaves a half-written file.
     fd, temp_path = tempfile.mkstemp(dir=path.parent, prefix=f".{path.stem}-")
@@ -79,3 +97,9 @@ class SharedPasswordAuthenticator:
         if email and hmac.compare_digest(password.encode(), self._password.encode()):
             return StaffMember(email=email)
         return None
+
+    def create(self, email: str, temporary_password: str) -> bool:
+        return False  # everyone signs in with the shared password; there is no account to make
+
+    def change_password(self, email: str, current_password: str, new_password: str) -> bool:
+        raise PasswordChangeRefused("Local mode uses one shared password, set in LIFELINE_ADMIN_PASSWORD.")

@@ -3,7 +3,8 @@
 Three audiences, three trust levels:
   devices  -> POST /api/report               (per-unit token header)
   families -> /s/<share-token>, /api/family/* (unguessable per-patient link)
-  staff    -> /, /api/patients, /api/status   (signed-in session cookie)
+  staff    -> /, /api/patients, /api/status   (signed-in session cookie + a role, see access.py)
+  county   -> /county, /api/county            (signed in with the county role)
 
 Run:  python3 app.py   (see README for Supabase and Twilio settings)
 """
@@ -30,17 +31,19 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Callable
 
+from access import InvalidStaffChange, Permission, Role, StaffAccount, StaffDirectory, StaffStore
 from domain import DEVICE_ID_PATTERN, Button, IncidentKind, SensorReadings, InvalidPatient, Monitor, Outage, Patient, ReplyResult, UnitHealth, UnknownDevice
-from local import JsonFileOutageStore, JsonFilePatientStore, SharedPasswordAuthenticator
+from local import JsonFileOutageStore, JsonFilePatientStore, JsonFileStaffStore, SharedPasswordAuthenticator
 from notifiers import WHATSAPP_PREFIX, ConsoleNotifier, NtfyNotifier, TwilioNotifier, is_valid_twilio_signature
 from records import patient_to_record
 from geocode import MAX_ADDRESS_LENGTH, CensusGeocoder, GeocoderUnavailable
 from respond import RespondTokens
 from service import DuplicateDevice, Lifeline, Notifier, OutageStore, PatientStore, utc_now
-from staff import LoginThrottle, Sessions, StaffAuthenticator, StaffMember
+from staff import (IdentityProvider, LoginThrottle, PasswordChangeRefused, Sessions, SignInAccounts, StaffAuthenticator, StaffMember,
+                   check_new_password, temporary_password)
 from storm import StormWatch, WeatherSource
 from weather import DemoWeather, NwsWeather
-from supabase_backend import (SupabaseAuthenticator, SupabaseClient, SupabaseError, SupabaseOutageStore, SupabasePatientStore,
+from supabase_backend import (SupabaseAuthenticator, SupabaseClient, SupabaseError, SupabaseOutageStore, SupabasePatientStore, SupabaseStaffStore,
                               SupabaseUnreachable)
 
 HERE = Path(__file__).parent
@@ -83,24 +86,31 @@ class HttpError(Exception):
         self.message = message
 
 
+SIGNED_IN = "signed in"  # a route any role may use, e.g. "who am I"
+
+
 class Route:
-    def __init__(self, method: str, pattern: str, handler: Callable, staff_only: bool = False):
+    """`needs` is the permission a signed-in caller must hold, SIGNED_IN for any role,
+    or None for routes that carry their own credential (devices, family links, push buttons)."""
+
+    def __init__(self, method: str, pattern: str, handler: Callable, needs: Permission | str | None = None):
         self.method = method
         self.pattern = re.compile(f"^{pattern}$")
         self.handler = handler
-        self.staff_only = staff_only
+        self.needs = needs
 
 
 class Handler(BaseHTTPRequestHandler):
     lifeline: Lifeline
     authenticator: StaffAuthenticator
+    accounts: SignInAccounts
+    staff: StaffDirectory
     sessions: Sessions
     throttle: LoginThrottle
     public_url: str
     twilio_auth_token: str | None
     respond_tokens: RespondTokens
     geocoder: CensusGeocoder
-    county_token: str | None = None  # LIFELINE_COUNTY_TOKEN; the county page is off without it
     storm_mode: str = "off"            # on, off or demo; set by main()
     storm_check_seconds: int = 300
     routes: list[Route]
@@ -126,11 +136,13 @@ class Handler(BaseHTTPRequestHandler):
             if route.method != method or not match:
                 continue
             try:
-                if route.staff_only:
-                    self._require_staff(method)
+                if route.needs is not None:
+                    self._require(route.needs, method)
                 route.handler(self, *match.groups())
             except HttpError as error:
                 self._send_json(error.status, {"error": error.message})
+            except (InvalidStaffChange, PasswordChangeRefused) as error:
+                self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
             except InvalidPatient as error:
                 status = HTTPStatus.CONFLICT if isinstance(error, DuplicateDevice) else HTTPStatus.BAD_REQUEST
                 self._send_json(status, {"error": str(error)})
@@ -145,14 +157,33 @@ class Handler(BaseHTTPRequestHandler):
     # ---- pages and static assets ------------------------------------------
 
     def page_platform(self) -> None:
-        if self._staff() is None:
+        account = self._account()
+        if account is None:
             self._redirect("/login")
-            return
-        self._send_file(STATIC / "platform.html")
+        elif not account.can(Permission.VIEW_BOARD):
+            self._redirect(home_page(account))
+        else:
+            self._send_file(STATIC / "platform.html")
+
+    def page_county(self) -> None:
+        account = self._account()
+        if account is None:
+            self._redirect("/login")
+        elif not account.can(Permission.VIEW_COUNTY):
+            self._redirect(home_page(account))
+        else:
+            self._send_file(STATIC / "county.html")
+
+    def page_account(self) -> None:
+        if self._account() is None:
+            self._redirect("/login")
+        else:
+            self._send_file(STATIC / "account.html")
 
     def page_login(self) -> None:
-        if self._staff() is not None:
-            self._redirect("/")
+        account = self._account()
+        if account is not None:
+            self._redirect(home_page(account))
             return
         self._send_file(STATIC / "login.html")
 
@@ -206,17 +237,8 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- county emergency management ----------------------------------------
 
-    def page_county(self, token: str) -> None:
-        self._require_county(token)
-        self._send_file(STATIC / "county.html")
-
-    def api_county(self, token: str) -> None:
-        self._require_county(token)
+    def api_county(self) -> None:
         self._send_json(HTTPStatus.OK, {"homes": self.lifeline.county_view()})
-
-    def _require_county(self, token: str) -> None:
-        if not self.county_token or not hmac.compare_digest(token, self.county_token):
-            raise HttpError(HTTPStatus.NOT_FOUND, "not found")
 
     # ---- families -----------------------------------------------------------
 
@@ -248,16 +270,72 @@ class Handler(BaseHTTPRequestHandler):
             self.throttle.record_failure(address, email)
             raise HttpError(HTTPStatus.UNAUTHORIZED, "That email and password don't match a staff account.")
         self.throttle.record_success(address, email)
+        account = self.staff.account(member.email)
+        if account is None:
+            raise HttpError(HTTPStatus.FORBIDDEN, "Your password is right, but your account has no access to Lifeline yet. Ask an admin to add you.")
         session_id = self.sessions.start(member)
-        self._send_json(HTTPStatus.OK, {"email": member.email}, cookie=self._session_cookie(session_id))
+        self._send_json(HTTPStatus.OK, {"email": member.email, "home": home_page(account)}, cookie=self._session_cookie(session_id))
 
     def api_logout(self) -> None:
         self.sessions.end(self._session_id())
         self._send_json(HTTPStatus.OK, {"ok": True}, cookie=self._session_cookie("", expire=True))
 
     def api_me(self) -> None:
-        county_link = f"{self.public_url}/county/{self.county_token}" if self.county_token else None
-        self._send_json(HTTPStatus.OK, {"email": self._staff().email, "county_link": county_link})
+        account = self._account()
+        self._send_json(HTTPStatus.OK, {"email": account.email, "role": account.role.value, "role_label": account.role.label,
+                                        "permissions": sorted(p.value for p in Permission if account.can(p))})
+
+    # ---- admins: staff and their roles --------------------------------------
+
+    def api_list_staff(self) -> None:
+        self._send_json(HTTPStatus.OK, {
+            "staff": [{"email": a.email, "role": a.role.value} for a in self.staff.accounts()],
+            "roles": [{"value": r.value, "label": r.label} for r in Role],
+        })
+
+    def api_add_staff(self) -> None:
+        """Give someone access: their sign-in account (if they have none yet) and their role.
+        A new account gets a temporary password, returned once for the admin to pass on."""
+        email, role = self._staff_change()
+        StaffAccount(email, role)  # validate before touching the identity provider
+        password = temporary_password()
+        created = self.accounts.create(email, password)
+        account = self.staff.set_role(self._account().email, email, role)
+        self._send_json(HTTPStatus.CREATED, {"email": account.email, "role": account.role.value,
+                                             "temporary_password": password if created else None})
+
+    def api_set_role(self) -> None:
+        email, role = self._staff_change()
+        account = self.staff.set_role(self._account().email, email, role)
+        self._send_json(HTTPStatus.OK, {"email": account.email, "role": account.role.value})
+
+    def _staff_change(self) -> tuple[str, Role]:
+        data = self._json_body()
+        email, role = data.get("email"), data.get("role")
+        if not isinstance(email, str) or role not in {r.value for r in Role}:
+            raise HttpError(HTTPStatus.BAD_REQUEST, "Choose an email and a role.")
+        return email.strip().lower(), Role(role)
+
+    def api_change_password(self) -> None:
+        data = self._json_body()
+        current, new = data.get("current_password"), data.get("new_password")
+        if not isinstance(current, str) or not isinstance(new, str):
+            raise HttpError(HTTPStatus.BAD_REQUEST, "Enter your current password and a new one.")
+        email, address = self._account().email, self.client_address[0]
+        if self.throttle.is_blocked(address, email):
+            raise HttpError(HTTPStatus.TOO_MANY_REQUESTS, "Too many attempts. Wait 15 minutes and try again.")
+        check_new_password(current, new)
+        if not self.accounts.change_password(email, current, new):
+            self.throttle.record_failure(address, email)
+            raise HttpError(HTTPStatus.BAD_REQUEST, "Your current password is not right.")
+        self._send_json(HTTPStatus.OK, {"ok": True})
+
+    def api_remove_staff(self) -> None:
+        email = self._json_body().get("email")
+        if not isinstance(email, str):
+            raise HttpError(HTTPStatus.BAD_REQUEST, "Choose who to remove.")
+        self.staff.remove(self._account().email, email)
+        self._send_json(HTTPStatus.OK, {"ok": True})
 
     # ---- staff: live board and roster ---------------------------------------
 
@@ -280,7 +358,11 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.OK, {"matches": [{"address": m.address, "lat": m.lat, "lon": m.lon} for m in matches[:5]]})
 
     def api_list_patients(self) -> None:
-        self._send_json(HTTPStatus.OK, {"patients": [self._staff_view(p) for p in self.lifeline.roster()]})
+        if self._account().can(Permission.MANAGE_PATIENTS):
+            patients = [self._staff_view(p) for p in self.lifeline.roster()]
+        else:
+            patients = [care_view(p) for p in self.lifeline.roster()]
+        self._send_json(HTTPStatus.OK, {"patients": patients})
 
     def api_add_patient(self) -> None:
         self._send_json(HTTPStatus.CREATED, self._staff_view(self.lifeline.add_patient(self._json_body())))
@@ -346,9 +428,20 @@ class Handler(BaseHTTPRequestHandler):
     def _staff(self) -> StaffMember | None:
         return self.sessions.member(self._session_id())
 
-    def _require_staff(self, method: str) -> None:
+    def _account(self) -> StaffAccount | None:
+        """The signed-in person with their role, looked up on each request so a role change
+        or removal takes effect at once, not when their session expires."""
+        member = self._staff()
+        return self.staff.account(member.email) if member else None
+
+    def _require(self, needs: Permission | str, method: str) -> None:
         if self._staff() is None:
             raise HttpError(HTTPStatus.UNAUTHORIZED, "Sign in to continue.")
+        account = self._account()
+        if account is None:
+            raise HttpError(HTTPStatus.FORBIDDEN, "Your account has no access to Lifeline. Ask an admin to add you.")
+        if isinstance(needs, Permission) and not account.can(needs):
+            raise HttpError(HTTPStatus.FORBIDDEN, f"Your role ({account.role.label}) can't do that.")
         if method != "GET":
             self._require_same_origin()
 
@@ -417,15 +510,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def log_message(self, fmt: str, *args) -> None:
         # Request lines contain family-link tokens; keep them out of logs.
-        log.debug("%s %s", self.address_string(), re.sub(r"/(s|api/family|county|api/county|api/respond)/[^/ ]+", r"/\1/<link>", fmt % args))
+        log.debug("%s %s", self.address_string(), re.sub(r"/(s|api/family|api/respond)/[^/ ]+", r"/\1/<link>", fmt % args))
 
 
 Handler.routes = [
     Route("GET", r"/", Handler.page_platform),
     Route("GET", r"/login", Handler.page_login),
+    Route("GET", r"/account", Handler.page_account),
     Route("GET", r"/s/([A-Za-z0-9_-]{16,})", Handler.page_family),
-    Route("GET", r"/county/([A-Za-z0-9_-]{32,})", Handler.page_county),
-    Route("GET", r"/api/county/([A-Za-z0-9_-]{32,})", Handler.api_county),
+    Route("GET", r"/county", Handler.page_county),
+    Route("GET", r"/api/county", Handler.api_county, needs=Permission.VIEW_COUNTY),
     Route("GET", r"/static/((?:images/)?[A-Za-z0-9_-][A-Za-z0-9_.-]*)", Handler.static_asset),
     Route("POST", r"/api/report", Handler.api_report),
     Route("POST", r"/api/sms-inbound", Handler.api_sms_inbound),
@@ -434,23 +528,41 @@ Handler.routes = [
     Route("POST", r"/api/family/([A-Za-z0-9_-]{16,})/ack", Handler.api_family_ack),
     Route("POST", r"/api/login", Handler.api_login),
     Route("POST", r"/api/logout", Handler.api_logout),
-    Route("GET", r"/api/me", Handler.api_me, staff_only=True),
-    Route("GET", r"/api/status", Handler.api_status, staff_only=True),
-    Route("POST", r"/api/ack/([a-z0-9-]+)", Handler.api_staff_ack, staff_only=True),
-    Route("GET", r"/api/weather-map", Handler.api_weather_map, staff_only=True),
-    Route("GET", r"/api/history", Handler.api_history, staff_only=True),
-    Route("GET", r"/api/history\.csv", Handler.api_history_csv, staff_only=True),
-    Route("POST", r"/api/geocode", Handler.api_geocode, staff_only=True),
-    Route("GET", r"/api/patients", Handler.api_list_patients, staff_only=True),
-    Route("POST", r"/api/patients", Handler.api_add_patient, staff_only=True),
-    Route("PUT", r"/api/patients/([a-z0-9-]+)", Handler.api_update_patient, staff_only=True),
-    Route("POST", r"/api/patients/([a-z0-9-]+)/rotate-link", Handler.api_rotate_link, staff_only=True),
-    Route("DELETE", r"/api/patients/([a-z0-9-]+)", Handler.api_delete_patient, staff_only=True),
+    Route("GET", r"/api/me", Handler.api_me, needs=SIGNED_IN),
+    Route("GET", r"/api/status", Handler.api_status, needs=Permission.VIEW_BOARD),
+    Route("POST", r"/api/ack/([a-z0-9-]+)", Handler.api_staff_ack, needs=Permission.RESPOND),
+    Route("GET", r"/api/weather-map", Handler.api_weather_map, needs=Permission.VIEW_BOARD),
+    Route("GET", r"/api/history", Handler.api_history, needs=Permission.VIEW_HISTORY),
+    Route("GET", r"/api/history\.csv", Handler.api_history_csv, needs=Permission.VIEW_HISTORY),
+    Route("POST", r"/api/geocode", Handler.api_geocode, needs=Permission.MANAGE_PATIENTS),
+    Route("GET", r"/api/patients", Handler.api_list_patients, needs=Permission.VIEW_PATIENTS),
+    Route("POST", r"/api/patients", Handler.api_add_patient, needs=Permission.MANAGE_PATIENTS),
+    Route("PUT", r"/api/patients/([a-z0-9-]+)", Handler.api_update_patient, needs=Permission.MANAGE_PATIENTS),
+    Route("POST", r"/api/patients/([a-z0-9-]+)/rotate-link", Handler.api_rotate_link, needs=Permission.MANAGE_PATIENTS),
+    Route("DELETE", r"/api/patients/([a-z0-9-]+)", Handler.api_delete_patient, needs=Permission.MANAGE_PATIENTS),
+    Route("GET", r"/api/staff", Handler.api_list_staff, needs=Permission.MANAGE_STAFF),
+    Route("POST", r"/api/staff", Handler.api_add_staff, needs=Permission.MANAGE_STAFF),
+    Route("PUT", r"/api/staff", Handler.api_set_role, needs=Permission.MANAGE_STAFF),
+    Route("POST", r"/api/password", Handler.api_change_password, needs=SIGNED_IN),
+    Route("POST", r"/api/staff/remove", Handler.api_remove_staff, needs=Permission.MANAGE_STAFF),
 ]
 
 
 def family_link(public_url: str, patient: Patient) -> str:
     return f"{public_url}/s/{patient.share_token}"
+
+
+def home_page(account: StaffAccount) -> str:
+    return "/" if account.can(Permission.VIEW_BOARD) else "/county"
+
+
+def care_view(patient: Patient) -> dict:
+    """What care staff without admin rights see: everything needed to reach the patient and
+    their people, but not the unit token or family link, which work as passwords."""
+    record = patient_to_record(patient)
+    for secret in ("device_token", "share_token"):
+        record.pop(secret)
+    return record
 
 
 # ---- presenters ------------------------------------------------------------------
@@ -570,18 +682,20 @@ def _csv_safe(value: object) -> object:
 
 # ---- composition root ---------------------------------------------------------
 
-def build_backend() -> tuple[PatientStore, OutageStore, StaffAuthenticator, str]:
+def build_backend() -> tuple[PatientStore, OutageStore, IdentityProvider, StaffStore, str]:
     url, key = os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_SECRET_KEY")
     if url and key:
         client = SupabaseClient(url, key)
-        return SupabasePatientStore(client), SupabaseOutageStore(client), SupabaseAuthenticator(client), "Supabase"
+        return (SupabasePatientStore(client), SupabaseOutageStore(client), SupabaseAuthenticator(client),
+                SupabaseStaffStore(client), "Supabase")
     password = os.environ.get("LIFELINE_ADMIN_PASSWORD")
     if not password:
         raise SystemExit("Set SUPABASE_URL + SUPABASE_SECRET_KEY, or LIFELINE_ADMIN_PASSWORD for local mode.")
     patients_file = Path(os.environ.get("LIFELINE_PATIENTS", HERE / "patients.json"))
     outages_file = Path(os.environ.get("LIFELINE_OUTAGES", HERE / "outages.json"))
-    return (JsonFilePatientStore(patients_file), JsonFileOutageStore(outages_file),
-            SharedPasswordAuthenticator(password), f"local files {patients_file.name}, {outages_file.name}")
+    staff_file = Path(os.environ.get("LIFELINE_STAFF", HERE / "staff.json"))
+    return (JsonFilePatientStore(patients_file), JsonFileOutageStore(outages_file), SharedPasswordAuthenticator(password),
+            JsonFileStaffStore(staff_file), f"local files {patients_file.name}, {outages_file.name}, {staff_file.name}")
 
 
 def build_sessions() -> Sessions:
@@ -638,6 +752,18 @@ def load_open_incidents(outages: OutageStore) -> list[Outage]:
     except SupabaseError as error:
         log.error("%s. History and restart recovery are off; has supabase/migrations/002_outages.sql been run?", error)
     return []
+
+
+def load_staff(store: StaffStore) -> StaffDirectory:
+    bootstrap = os.environ.get("LIFELINE_BOOTSTRAP_ADMIN") or None
+    accounts: list[StaffAccount] = []
+    try:
+        accounts = retry_while_unreachable(store.list_all, "staff roles")
+    except SupabaseError as error:
+        log.error("%s. Only LIFELINE_BOOTSTRAP_ADMIN can sign in; has supabase/migrations/005_staff_roles.sql been run?", error)
+    if not accounts and not bootstrap:
+        log.warning("No staff roles yet and LIFELINE_BOOTSTRAP_ADMIN is not set: nobody can sign in")
+    return StaffDirectory(store, accounts, bootstrap)
 
 
 def build_notifier() -> Notifier:
@@ -704,7 +830,7 @@ def main() -> None:
     port = int(os.environ.get("PORT", "8080"))
     public_url = os.environ.get("LIFELINE_PUBLIC_URL", f"http://localhost:{port}").rstrip("/")
 
-    store, outages, authenticator, backend_name = build_backend()
+    store, outages, authenticator, staff_store, backend_name = build_backend()
     open_incidents = load_open_incidents(outages)
     # The Monitor is fully restored before the ticker starts or the port opens.
     monitor = Monitor(
@@ -722,14 +848,13 @@ def main() -> None:
 
     Handler.lifeline = lifeline
     Handler.authenticator = authenticator
+    Handler.accounts = authenticator  # the same identity provider signs people in and manages their accounts
+    Handler.staff = load_staff(staff_store)
     Handler.sessions = build_sessions()
     Handler.throttle = LoginThrottle()
     Handler.public_url = public_url
     Handler.respond_tokens = respond_tokens
     Handler.geocoder = CensusGeocoder()
-    Handler.county_token = os.environ.get("LIFELINE_COUNTY_TOKEN") or None
-    if Handler.county_token and len(Handler.county_token) < 32:
-        raise SystemExit("LIFELINE_COUNTY_TOKEN must be at least 32 random characters")
     Handler.twilio_auth_token = None
     if os.environ.get("LIFELINE_NOTIFIER") == "twilio":
         if not public_url.startswith("https://"):

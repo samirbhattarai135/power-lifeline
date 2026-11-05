@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Lifeline: change password</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;700;800&display=swap">
+<link rel="stylesheet" href="/static/app.css">
+<script type="module" src="/static/account.js"></script>
+</head>
+<body>
+<main class="page account">
+  <div class="family-brand">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12h4l2-5 4 10 2-5h8"/></svg>
+    Lifeline
+  </div>
+  <form id="password-form" class="account-form" novalidate>
+    <h1>Change password</h1>
+    <p class="muted" id="signed-in-as"></p>
+    <p id="error" class="form-error" role="alert" hidden></p>
+    <p id="done" class="form-success" role="status" hidden>Password changed. Use the new one next time you sign in.</p>
+    <div class="field">
+      <label for="current">Current password</label>
+      <input class="input" id="current" name="current" type="password" autocomplete="current-password" required>
+      <span class="hint">If an admin just added you, this is the temporary password they gave you.</span>
+    </div>
+    <div class="field">
+      <label for="new">New password</label>
+      <input class="input" id="new" name="new" type="password" autocomplete="new-password" minlength="10" required>
+      <span class="hint">At least 10 characters. A few unrelated words is easy to remember and hard to guess.</span>
+    </div>
+    <div class="field">
+      <label for="repeat">New password again</label>
+      <input class="input" id="repeat" name="repeat" type="password" autocomplete="new-password" required>
+    </div>
+    <div class="panel-actions">
+      <button class="btn" type="submit">Change password</button>
+      <a class="btn btn-quiet" id="back" href="/">Back</a>
+    </div>
+  </form>
+</main>
+</body>
+</html>

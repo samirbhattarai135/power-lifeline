@@ -13,8 +13,9 @@ import urllib.error
 import urllib.request
 
 import app
+from access import InvalidStaffChange, Permission, Role, StaffAccount, StaffDirectory
 from app import button_event, incident_view, incidents_csv, sensor_readings, unit_health
-from domain import (Button, Channel, Contact, IncidentKind, SensorReadings, InvalidPatient, Monitor, Notification, Patient, ReplyResult,
+from domain import (Button, Channel, Contact, EmergencyPlan, IncidentKind, SensorReadings, InvalidPatient, Monitor, Notification, Patient, ReplyResult,
                     UnitHealth, UnknownDevice)
 from local import JsonFileOutageStore, JsonFilePatientStore, SharedPasswordAuthenticator
 from notifiers import NtfyNotifier, TwilioNotifier, is_valid_twilio_signature
@@ -227,6 +228,23 @@ class RestartRecovery(unittest.TestCase):
         before.report("unit-01", False, 90, T0)
         after = make_monitor(a_patient(device_id="unit-02", share_token="j" * 20), open_incidents=before.drain_changes())
         self.assertEqual(after.status("unit-02", T0)["status"], "never_seen")
+
+
+class BoardAttention(unittest.TestCase):
+    def test_flags_setup_gaps_that_would_slow_help_down(self):
+        family_only = a_patient(backup_minutes=90, contacts=(Contact("Family", "Son", "+16015550109", Channel.SMS),))
+        self.assertEqual(family_only.care_gaps(), ["Critical, with under 2 hours of backup", "Only one person on the call list",
+                                                   "No nurse or agency on the call list", "No emergency plan"])
+
+    def test_a_well_prepared_patient_has_no_gaps(self):
+        prepared = a_patient(acuity=2, plan=EmergencyPlan(supplies="2 oxygen tanks"))
+        self.assertEqual(prepared.care_gaps(), [])
+
+    def test_unit_problems_join_the_patient_gaps(self):
+        m = make_monitor(a_patient(acuity=2, plan=EmergencyPlan(steps="Call the nurse")))
+        self.assertEqual(m.status("unit-01", T0)["attention"], ["Unit has never connected"])
+        m.report("unit-01", True, 12, T0, UnitHealth(rssi=-85))
+        self.assertEqual(m.status("unit-01", T0)["attention"], ["Unit battery low", "Weak Wi-Fi at the unit"])
 
 
 class SilentUnits(unittest.TestCase):
@@ -802,6 +820,7 @@ class NtfyPush(unittest.TestCase):
 class StaffOnlyRoutes(unittest.TestCase):
     def test_history_and_report_need_a_signed_in_staff_member(self):
         app.Handler.sessions = Sessions("k" * 40)
+        app.Handler.staff = StaffDirectory(MemoryStaffStore(), [])
         server = app.ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
@@ -830,24 +849,165 @@ class StaticFiles(unittest.TestCase):
             refused.exception.close()
 
 
-class CountyRoute(unittest.TestCase):
-    def test_county_page_is_off_without_a_token_and_needs_the_exact_one(self):
+class MemoryStaffStore:
+    def __init__(self, *accounts):
+        self.accounts = {a.email: a for a in accounts}
+
+    def list_all(self):
+        return list(self.accounts.values())
+
+    def save(self, account):
+        self.accounts[account.email] = account
+
+    def delete(self, email):
+        self.accounts.pop(email, None)
+
+
+class FakeAccounts:
+    """Stands in for Supabase Auth: remembers passwords so sign-in and changes can be checked."""
+
+    def __init__(self, **passwords):
+        self.passwords = dict(passwords)
+
+    def create(self, email, temporary_password):
+        if email in self.passwords:
+            return False
+        self.passwords[email] = temporary_password
+        return True
+
+    def change_password(self, email, current_password, new_password):
+        if self.passwords.get(email) != current_password:
+            return False
+        self.passwords[email] = new_password
+        return True
+
+
+class StaffDirectoryRules(unittest.TestCase):
+    def directory(self):
+        store = MemoryStaffStore(StaffAccount("nurse@agency.org", Role.NURSE))
+        return store, StaffDirectory(store, store.list_all(), bootstrap_admin="Boss@Agency.org")
+
+    def test_bootstrap_admin_and_stored_roles(self):
+        _, staff = self.directory()
+        self.assertEqual(staff.account("boss@agency.org").role, Role.ADMIN)
+        self.assertEqual(staff.account(" NURSE@agency.org ").role, Role.NURSE)
+        self.assertIsNone(staff.account("stranger@agency.org"))
+
+    def test_role_changes_are_saved_and_take_effect_at_once(self):
+        store, staff = self.directory()
+        staff.set_role("boss@agency.org", "County@Forrest.gov", Role.COUNTY)
+        self.assertEqual(store.accounts["county@forrest.gov"].role, Role.COUNTY)
+        staff.remove("boss@agency.org", "nurse@agency.org")
+        self.assertIsNone(staff.account("nurse@agency.org"))
+
+    def test_admins_cannot_lock_themselves_out(self):
+        _, staff = self.directory()
+        with self.assertRaises(InvalidStaffChange):
+            staff.set_role("boss@agency.org", "boss@agency.org", Role.VIEWER)
+        with self.assertRaises(InvalidStaffChange):
+            staff.remove("boss@agency.org", "boss@agency.org")
+        with self.assertRaises(InvalidStaffChange):
+            staff.set_role("boss@agency.org", "not-an-email", Role.NURSE)
+
+    def test_each_role_gets_only_its_permissions(self):
+        self.assertTrue(StaffAccount("a@b.org", Role.ADMIN).can(Permission.MANAGE_STAFF))
+        nurse, viewer, county = (StaffAccount("a@b.org", r) for r in (Role.NURSE, Role.VIEWER, Role.COUNTY))
+        self.assertTrue(nurse.can(Permission.RESPOND) and nurse.can(Permission.VIEW_PATIENTS))
+        self.assertFalse(nurse.can(Permission.MANAGE_PATIENTS) or nurse.can(Permission.MANAGE_STAFF))
+        self.assertFalse(viewer.can(Permission.RESPOND) or viewer.can(Permission.VIEW_PATIENTS))
+        self.assertEqual({p for p in Permission if county.can(p)}, {Permission.VIEW_COUNTY})
+
+
+class RoleEnforcement(unittest.TestCase):
+    """Over HTTP: the server, not the page, decides what each role may do."""
+
+    def setUp(self):
+        app.Handler.sessions = Sessions("k" * 40)
+        app.Handler.public_url = "http://lifeline.test"
+        app.Handler.accounts = self.accounts = FakeAccounts(**{"nurse@a.org": "old-password-1"})
+        app.Handler.throttle = LoginThrottle()
         app.Handler.lifeline = Lifeline(make_monitor(), MemoryStore(a_patient()), SilentNotifier(), MemoryOutageStore())
+        app.Handler.staff = StaffDirectory(MemoryStaffStore(), [
+            StaffAccount("admin@a.org", Role.ADMIN), StaffAccount("nurse@a.org", Role.NURSE),
+            StaffAccount("viewer@a.org", Role.VIEWER), StaffAccount("county@c.gov", Role.COUNTY)])
         server = app.ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         self.addCleanup(server.server_close)
         self.addCleanup(server.shutdown)
-        self.addCleanup(setattr, app.Handler, "county_token", None)
-        url = f"http://127.0.0.1:{server.server_port}/api/county/"
-        for configured, asked in ((None, "c" * 40), ("c" * 40, "d" * 40)):
-            app.Handler.county_token = configured
-            with self.subTest(configured=configured), self.assertRaises(urllib.error.HTTPError) as refused:
-                urllib.request.urlopen(url + asked, timeout=5)
-            self.assertEqual(refused.exception.code, 404)
-            refused.exception.close()
-        app.Handler.county_token = "c" * 40
-        with urllib.request.urlopen(url + "c" * 40, timeout=5) as response:
-            self.assertEqual(json.load(response)["homes"][0]["name"], "Ruth")
+        self.base = f"http://127.0.0.1:{server.server_port}"
+
+    def call(self, email, method, path, body=None):
+        headers = {"Content-Type": "application/json"}
+        if email:
+            headers["Cookie"] = f"{app.SESSION_COOKIE}={app.Handler.sessions.start(StaffMember(email))}"
+        data = json.dumps(body).encode() if body is not None else None
+        request = urllib.request.Request(self.base + path, data=data, method=method, headers=headers)
+        try:
+            with urllib.request.urlopen(request, timeout=5) as response:
+                return response.status, json.load(response)
+        except urllib.error.HTTPError as error:
+            with error:
+                return error.code, json.load(error)
+
+    def test_what_each_role_can_reach(self):
+        expected = {  # path: (admin, nurse, viewer, county, signed in without a role)
+            ("GET", "/api/status"): (200, 200, 200, 403, 403),
+            ("GET", "/api/history"): (200, 200, 200, 403, 403),
+            ("GET", "/api/patients"): (200, 200, 403, 403, 403),
+            ("GET", "/api/staff"): (200, 403, 403, 403, 403),
+            ("GET", "/api/county"): (200, 403, 403, 200, 403),
+            ("POST", "/api/patients/unit-01/rotate-link"): (200, 403, 403, 403, 403),
+        }
+        people = ("admin@a.org", "nurse@a.org", "viewer@a.org", "county@c.gov", "nobody@a.org")
+        for (method, path), codes in expected.items():
+            for email, code in zip(people, codes):
+                with self.subTest(path=path, email=email):
+                    self.assertEqual(self.call(email, method, path, {} if method == "POST" else None)[0], code)
+        self.assertEqual(self.call(None, "GET", "/api/status")[0], 401)
+
+    def test_nurses_see_call_lists_but_not_unit_tokens_or_family_links(self):
+        nurse_view = self.call("nurse@a.org", "GET", "/api/patients")[1]["patients"][0]
+        self.assertEqual(nurse_view["contacts"][0]["phone"], "+16015550101")
+        self.assertNotIn("device_token", nurse_view)
+        self.assertNotIn("share_token", nurse_view)
+        self.assertNotIn("status_link", nurse_view)
+        admin_view = self.call("admin@a.org", "GET", "/api/patients")[1]["patients"][0]
+        self.assertEqual(admin_view["device_token"], TOKEN)
+
+    def test_only_responders_can_acknowledge(self):
+        app.Handler.lifeline.report("unit-01", False, 90)
+        self.assertEqual(self.call("viewer@a.org", "POST", "/api/ack/unit-01", {})[0], 403)
+        self.assertEqual(self.call("nurse@a.org", "POST", "/api/ack/unit-01", {}), (200, {"acknowledged": True}))
+
+    def test_admin_manages_roles_and_a_removed_person_loses_access_immediately(self):
+        status, added = self.call("admin@a.org", "POST", "/api/staff", {"email": "New@A.org", "role": "viewer"})
+        self.assertEqual((status, added["email"]), (201, "new@a.org"))
+        self.assertEqual(self.accounts.passwords["new@a.org"], added["temporary_password"])
+        self.assertEqual(self.call("new@a.org", "GET", "/api/status")[0], 200)
+        self.assertEqual(self.call("admin@a.org", "POST", "/api/staff/remove", {"email": "new@a.org"})[0], 200)
+        self.assertEqual(self.call("new@a.org", "GET", "/api/status")[0], 403)
+        status, body = self.call("admin@a.org", "PUT", "/api/staff", {"email": "admin@a.org", "role": "nurse"})
+        self.assertEqual(status, 400)
+        self.assertIn("own admin role", body["error"])
+
+    def test_adding_someone_who_already_has_an_account_keeps_their_password(self):
+        status, added = self.call("admin@a.org", "POST", "/api/staff", {"email": "nurse@a.org", "role": "viewer"})
+        self.assertEqual((status, added["temporary_password"]), (201, None))
+        self.assertEqual(self.accounts.passwords["nurse@a.org"], "old-password-1")
+        self.assertEqual(self.call("nurse@a.org", "GET", "/api/me")[1]["role"], "viewer")
+
+    def test_people_change_their_own_password_with_the_current_one(self):
+        change = lambda current, new: self.call("nurse@a.org", "POST", "/api/password", {"current_password": current, "new_password": new})
+        self.assertEqual(change("wrong-password", "brand-new-password")[0], 400)
+        self.assertEqual(change("old-password-1", "short")[0], 400)
+        self.assertEqual(change("old-password-1", "brand-new-password"), (200, {"ok": True}))
+        self.assertEqual(self.accounts.passwords["nurse@a.org"], "brand-new-password")
+        self.assertEqual(self.call(None, "POST", "/api/password", {})[0], 401)
+
+    def test_me_reports_role_and_permissions(self):
+        status, me = self.call("viewer@a.org", "GET", "/api/me")
+        self.assertEqual((status, me["role"]), (200, "viewer"))
+        self.assertEqual(me["permissions"], ["view_board", "view_history"])
 
 
 class RespondRoute(unittest.TestCase):

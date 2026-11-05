@@ -1,6 +1,5 @@
-import { api, el, clockTime, durationText, listNames, minutesSince, plural } from "./common.js";
+import { ApiError, api, el, clockTime, durationText, listNames, minutesSince, plural } from "./common.js";
 
-const token = location.pathname.split("/").pop();
 const REFRESH_MS = 15000;
 const STATUS_TEXT = { outage: "Power out", offline: "Unit silent", ok: "Power on", never_seen: "Not set up" };
 
@@ -36,7 +35,7 @@ function row(home) {
 
 async function refresh() {
   try {
-    const { homes } = await api("GET", `/api/county/${token}`);
+    const { homes } = await api("GET", "/api/county");
     const out = homes.filter((h) => h.status === "outage");
     const waiting = out.filter((h) => !h.responder);
     const allPower = out.every((h) => (h.emergency ?? "power") === "power");
@@ -53,10 +52,18 @@ async function refresh() {
         el("tbody", {}, homes.map(row))));
     document.getElementById("updated").textContent = `Updated ${new Date().toLocaleTimeString([], { hour: "numeric", minute: "2-digit", second: "2-digit" })}. Refreshes every 15 seconds.`;
   } catch (error) {
-    document.getElementById("county-title").textContent = error.status === 404 ? "This link is not active" : "Can't reach Lifeline right now";
-    if (error.status === 404) document.getElementById("county-body").replaceChildren();
+    if (error instanceof ApiError && (error.status === 401 || error.status === 403)) {
+      location.assign("/login");
+      return;
+    }
+    document.getElementById("county-title").textContent = "Can't reach Lifeline right now";
   }
 }
+
+document.getElementById("signout").addEventListener("click", async () => {
+  await api("POST", "/api/logout", {});
+  location.assign("/login");
+});
 
 refresh();
 setInterval(refresh, REFRESH_MS);

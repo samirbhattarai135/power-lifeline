@@ -163,6 +163,23 @@ select.input { padding-right: var(--space-lg); }
 .kpi-label { font-size: var(--text-sm); color: var(--color-ink-muted); }
 .kpi-value { font-size: var(--text-2xl); font-weight: 700; line-height: 1.1; }
 .kpi-note { font-size: var(--text-sm); color: var(--color-ink-muted); }
+
+/* History charts: one series each, ink marks, the goal line dashed and quiet. */
+.chart-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr)); gap: var(--space-md); margin: 0 0 var(--space-xl); }
+.chart-row:empty { display: none; }
+.chart-card { margin: 0; padding: var(--space-md); border-radius: var(--radius-md); background: var(--color-paper-raised); border: var(--rule-hair); display: grid; gap: var(--space-sm); }
+.chart-card h2 { font-size: var(--text-lg); }
+.chart-card figcaption p { margin: var(--space-2xs) 0 0; font-size: var(--text-sm); }
+.chart { width: 100%; height: auto; display: block; overflow: visible; }
+.chart-label { font: var(--text-sm) var(--font-body); fill: var(--color-ink-muted); font-size: 12px; }
+.chart-grid { stroke: var(--color-rule); stroke-width: 1; }
+.chart-axis { stroke: var(--color-rule-strong); stroke-width: 1; }
+.chart-bar { fill: var(--color-ink); }
+.chart-line { fill: none; stroke: var(--color-ink); stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
+.chart-dot { fill: var(--color-ink); stroke: var(--color-paper-raised); stroke-width: 2; }
+.chart-target { stroke: var(--color-acked); stroke-width: 2; stroke-dasharray: 6 4; }
+.chart-hit { fill: transparent; }
+.chart-hit:hover { fill: oklch(from var(--color-ink) l c h / 0.06); }
 .page td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
 .tag { display: inline-block; padding: 0 var(--space-xs); border-radius: var(--radius-sm); font-size: var(--text-sm); font-weight: 700; white-space: nowrap; background: var(--color-paper-sunk); }
 .tag-out { background: var(--color-out-wash); color: var(--color-out); }
@@ -191,6 +208,13 @@ select.input { padding-right: var(--space-lg); }
 .storm-banner h2 { font-size: var(--text-lg); }
 .storm-banner ul { margin: 0; padding-left: var(--space-lg); display: grid; gap: var(--space-2xs); }
 .storm-banner li.is-elevated strong { font-weight: 700; color: var(--color-ink-muted); }
+.call-first { margin: 0; }
+
+/* Setup problems: quiet until opened, never the alarm colour (nothing is wrong yet). */
+.attention { padding: var(--space-md) var(--space-xl); border-bottom: var(--rule-hair); background: var(--color-paper-raised); }
+.attention summary { cursor: pointer; font-weight: 700; min-height: 44px; display: flex; align-items: center; }
+.attention ul { margin: var(--space-xs) 0 0; padding-left: var(--space-lg); display: grid; gap: var(--space-2xs); color: var(--color-ink-muted); }
+.attention li strong { color: var(--color-ink); }
 .unit-hazard { font-size: var(--text-sm); }
 
 /* patient panel (native dialog) */
@@ -253,8 +277,23 @@ fieldset > .btn { justify-self: start; }
 .storm-note { border-radius: var(--radius-md); padding: var(--space-lg); background: var(--color-acked-wash); display: grid; gap: var(--space-xs); }
 .storm-note h2 { font-size: var(--text-lg); }
 .county .family-brand { margin-bottom: var(--space-lg); }
-.county-share { margin-top: var(--space-2xl); display: grid; gap: var(--space-xs); max-width: 48rem; }
-.county-share:empty { display: none; }
+.county .family-brand .push { margin-left: auto; }
+
+/* Staff and roles */
+.staff-add { display: grid; grid-template-columns: minmax(14rem, 2fr) minmax(12rem, 1fr) auto; gap: var(--space-md); align-items: end; margin-bottom: var(--space-lg); max-width: 56rem; }
+.staff-add .form-error { grid-column: 1 / -1; margin: 0; }
+.role-guide { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: var(--space-sm) var(--space-lg); margin: 0 0 var(--space-xl); font-size: var(--text-sm); }
+.role-guide dt { font-weight: 700; }
+.role-guide dd { margin: 0; color: var(--color-ink-muted); }
+.input-small { min-height: 36px; width: auto; }
+.who .tag { white-space: nowrap; }
+@media (max-width: 640px) { .staff-add { grid-template-columns: 1fr; } }
+
+/* Read-only patient details */
+.facts { display: grid; gap: var(--space-sm); margin: 0; }
+.facts dt { font-size: var(--text-sm); color: var(--color-ink-muted); }
+.facts dd { margin: 0; white-space: pre-line; }
+.call-list { margin: 0; padding-left: var(--space-lg); display: grid; gap: var(--space-xs); }
 .plan { border-radius: var(--radius-md); padding: var(--space-lg); background: var(--color-paper-raised); border: var(--rule-hair); display: grid; gap: var(--space-md); }
 .plan h2 { font-size: var(--text-lg); }
 .plan summary { font-weight: 700; cursor: pointer; }
@@ -286,7 +325,7 @@ fieldset > .btn { justify-self: start; }
   .topbar { flex-wrap: wrap; padding: var(--space-sm) var(--space-md); gap: var(--space-sm); }
   .views { margin: 0 calc(-1 * var(--space-md)); padding: 0 var(--space-md); width: calc(100% + 2 * var(--space-md)); }
   .who { margin-left: 0; width: 100%; justify-content: space-between; }
-  .headline, .unit, .storm-banner { padding-left: var(--space-md); padding-right: var(--space-md); }
+  .headline, .unit, .storm-banner, .attention { padding-left: var(--space-md); padding-right: var(--space-md); }
   .page { padding: var(--space-xl) var(--space-md); }
   .page thead { display: none; }
   .page tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; padding: var(--space-sm) 0; border-bottom: var(--rule-hair); }
@@ -311,7 +350,7 @@ fieldset > .btn { justify-self: start; }
   .page { padding: 0; max-width: none; }
   .page tbody tr:hover { background: none; }
   .page th, .page td { padding: 4px 6px; font-size: 10pt; }
-  .kpi { border: 1px solid #999; }
+  .kpi, .chart-card { border: 1px solid #999; break-inside: avoid; }
   .tag { background: none; padding: 0; }
 }
 
@@ -319,3 +358,10 @@ fieldset > .btn { justify-self: start; }
   *, *::before, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 150ms !important; }
   .is-out .state-dot { animation: none; }
 }
+
+/* Change password */
+.account .family-brand { margin-bottom: var(--space-xl); }
+.account-form { display: grid; gap: var(--space-lg); max-width: 28rem; }
+.account-form h1 { font-size: var(--text-2xl); }
+.account-form p { margin: 0; }
+.form-success { padding: var(--space-sm) var(--space-md); border-radius: var(--radius-sm); background: var(--color-on-wash); color: oklch(from var(--color-on) calc(l - 0.12) c h); font-weight: 700; }

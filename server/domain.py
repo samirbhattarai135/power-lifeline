@@ -55,6 +55,9 @@ class Contact:
 
 
 MAX_PLAN_TEXT_LENGTH = 600
+SHORT_BACKUP_MINUTES = 120   # a critical patient with less than this has little time to get help
+LOW_UNIT_BATTERY_PERCENT = 30
+WEAK_SIGNAL_DBM = -80        # below this the unit's reports start to drop
 MIN_RUNNING_AMPS, MAX_RUNNING_AMPS = 0.05, 30.0
 
 
@@ -114,6 +117,19 @@ class Patient:
             raise InvalidPatient(f"Add between 1 and {MAX_CONTACTS} contacts")
         if self.running_amps_min is not None and not MIN_RUNNING_AMPS <= self.running_amps_min <= MAX_RUNNING_AMPS:
             raise InvalidPatient(f"Running current must be between {MIN_RUNNING_AMPS} and {MAX_RUNNING_AMPS:g} amps")
+
+    def care_gaps(self) -> list[str]:
+        """What in this patient's setup would slow help down in an outage, in staff words."""
+        gaps = []
+        if self.acuity == 1 and self.backup_minutes < SHORT_BACKUP_MINUTES:
+            gaps.append(f"Critical, with under {SHORT_BACKUP_MINUTES // 60} hours of backup")
+        if len(self.contacts) == 1:
+            gaps.append("Only one person on the call list")
+        if not any(c.is_care_staff() for c in self.contacts):
+            gaps.append("No nurse or agency on the call list")
+        if self.plan.is_empty():
+            gaps.append("No emergency plan")
+        return gaps
 
 
 
@@ -641,4 +657,17 @@ class Monitor:
             "backup_minutes_left": self._backup_left(p, outage, now) if outage else None,
             "acknowledged_by": outage.acknowledged_by if outage else None,
             "contacts_alerted": outage.alerted_names() if outage else [],
+            "attention": self._attention(unit, status),
         }
+
+    @staticmethod
+    def _attention(unit: Unit, status: str) -> list[str]:
+        """Problems to fix before the next outage. Outages and offline units have their own alarms."""
+        problems = unit.patient.care_gaps()
+        if status == "never_seen":
+            problems.append("Unit has never connected")
+        if unit.battery_percent is not None and unit.battery_percent < LOW_UNIT_BATTERY_PERCENT and status == "ok":
+            problems.append("Unit battery low")
+        if unit.health.rssi is not None and unit.health.rssi < WEAK_SIGNAL_DBM:
+            problems.append("Weak Wi-Fi at the unit")
+        return problems

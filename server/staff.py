@@ -27,6 +27,41 @@ class StaffAuthenticator(Protocol):
         ...
 
 
+MIN_PASSWORD_LENGTH = 10
+
+
+class PasswordChangeRefused(ValueError):
+    """The new password was not accepted; the message tells the person why, in plain words."""
+
+
+class SignInAccounts(Protocol):
+    """Creating and changing the sign-in accounts themselves (roles live in access.py)."""
+
+    def create(self, email: str, temporary_password: str) -> bool:
+        """Make a sign-in account. True if created, False if one already exists for this email."""
+        ...
+
+    def change_password(self, email: str, current_password: str, new_password: str) -> bool:
+        """False if the current password is wrong; raises PasswordChangeRefused if the new one is refused."""
+        ...
+
+
+class IdentityProvider(StaffAuthenticator, SignInAccounts, Protocol):
+    """Signs people in and manages their accounts: Supabase Auth, or the local shared password."""
+
+
+def temporary_password() -> str:
+    """Shown once to the admin, who passes it on; the person replaces it after signing in."""
+    return secrets.token_urlsafe(12)
+
+
+def check_new_password(current: str, new: str) -> None:
+    if len(new) < MIN_PASSWORD_LENGTH:
+        raise PasswordChangeRefused(f"Use at least {MIN_PASSWORD_LENGTH} characters.")
+    if new == current:
+        raise PasswordChangeRefused("Choose a password different from the current one.")
+
+
 class Sessions:
     """Signed, expiring session cookies: "email|expiry|session id" plus an HMAC under a server secret.
     Nothing is stored server-side, so staff stay signed in across restarts; the secret

@@ -13,8 +13,8 @@ form.addEventListener("submit", async (event) => {
   }
   error.hidden = true;
   try {
-    await withButton(form.querySelector("button"), () => api("POST", "/api/login", { email, password }));
-    location.assign("/");
+    const { home } = await withButton(form.querySelector("button"), () => api("POST", "/api/login", { email, password }));
+    location.assign(home);
   } catch (failure) {
     showError(failure.message);
     form.password.select();

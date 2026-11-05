@@ -1,4 +1,5 @@
 import { createBoardMap } from "./map.js";
+import { barChart, lineChart } from "./charts.js";
 import { ApiError, api, el, clockTime, dateTime, durationText, hazardText, listNames, minutesSince, plural, secondsAgo, stateOf, uptimeText, withButton } from "./common.js";
 
 const BOARD_REFRESH_MS = 2000;
@@ -21,19 +22,20 @@ document.getElementById("signout").addEventListener("click", async () => {
   await api("POST", "/api/logout", {});
   location.assign("/login");
 });
-guarded(api("GET", "/api/me")).then(({ email, county_link }) => {
-  document.getElementById("who").textContent = email;
-  if (county_link) {
-    document.getElementById("county-share").replaceChildren(
-      copyRow("Live list for county emergency management", county_link, false),
-      el("p", { class: "hint muted" }, "Read only: who has no power, how much backup they have left, and whether anyone is responding. No phone numbers. Share it only with the county's emergency managers."));
-  }
-});
+// The server enforces every permission; the page only hides what this role can't use.
+const me = await guarded(api("GET", "/api/me"));
+const can = (permission) => me.permissions.includes(permission);
+document.getElementById("who").textContent = me.email;
+document.getElementById("role").textContent = me.role_label;
 
 // ---- views ---------------------------------------------------------------------
 
-const views = Object.fromEntries(["board", "patients", "history", "units"]
+const VIEW_NEEDS = { board: "view_board", patients: "view_patients", history: "view_history", units: "view_board", staff: "manage_staff" };
+const views = Object.fromEntries(Object.keys(VIEW_NEEDS).filter((name) => can(VIEW_NEEDS[name]))
   .map((name) => [name, document.getElementById(`view-${name}`)]));
+for (const link of document.querySelectorAll("[data-view]")) link.hidden = !(link.dataset.view in views);
+document.getElementById("county-link").hidden = !can("view_county");
+document.getElementById("add-patient").hidden = !can("manage_patients");
 
 function currentView() {
   const name = location.hash.slice(1);
@@ -50,6 +52,7 @@ function showView() {
   if (name === "patients") loadRoster();
   else if (name === "history") loadHistory();
   else if (name === "units") renderUnits();
+  else if (name === "staff") loadStaff();
   else boardMap.resize();
 }
 window.addEventListener("hashchange", showView);
@@ -102,7 +105,39 @@ function stormBanner(units) {
     el("h2", {}, "Storm watch"),
     el("ul", {}, lines.map(({ hazard, names }) => el("li", { class: `is-${hazard.level}` },
       el("strong", {}, hazardText(hazard)), `: ${listNames(names)}`))),
+    callFirst(units),
     el("p", { class: "muted" }, "High-risk warnings have been sent to each patient's first contact. Check backups now, most critical first."),
+  );
+}
+
+const CALL_FIRST_UNDER_MINUTES = 240;
+
+// In the storm's path and least able to wait: most critical first, then shortest backup.
+function callFirst(units) {
+  const urgent = units
+    .filter((u) => u.hazards.length && u.status !== "outage" && u.backup_minutes < CALL_FIRST_UNDER_MINUTES)
+    .sort((a, b) => a.acuity - b.acuity || a.backup_minutes - b.backup_minutes);
+  if (!urgent.length) return null;
+  return el("p", { class: "call-first" }, el("strong", {}, "Call first: "),
+    urgent.map((u) => `${u.name} (${durationText(u.backup_minutes)} of backup)`).join(", "));
+}
+
+// Setup problems that would slow help down, grouped so ten never-seen units read as one line.
+function attentionPanel(units) {
+  const byProblem = new Map();
+  for (const unit of units) {
+    for (const problem of unit.attention) {
+      if (!byProblem.has(problem)) byProblem.set(problem, []);
+      byProblem.get(problem).push(unit.name);
+    }
+  }
+  const node = document.getElementById("attention");
+  node.hidden = byProblem.size === 0;
+  if (!byProblem.size) return;
+  const patients = new Set(units.filter((u) => u.attention.length).map((u) => u.name)).size;
+  node.replaceChildren(
+    el("summary", {}, `${plural(patients, "patient")} to check before the next outage`),
+    el("ul", {}, [...byProblem].map(([problem, names]) => el("li", {}, el("strong", {}, problem), `: ${listNames(names)}`))),
   );
 }
 
@@ -128,7 +163,7 @@ function unitRow(unit) {
     else lines.push(respondButton(unit));
   } else if (unit.status === "outage") {
     lines.push(
-      el("p", { class: "unit-backup" }, el("strong", {}, String(unit.backup_minutes_left)), "minutes of backup left"),
+      backupLine(unit.backup_minutes_left),
       el("p", {}, `Out since ${clockTime(unit.outage_started)}${minutesSince(unit.outage_started) ? ` (${plural(minutesSince(unit.outage_started), "minute")})` : ", just now"}. ` +
         (unit.contacts_alerted.length ? `Alerted ${listNames(unit.contacts_alerted)}.` : "")),
     );
@@ -148,7 +183,14 @@ function unitRow(unit) {
   return el("article", { class: `unit is-${state}` }, lines);
 }
 
+function backupLine(minutesLeft) {
+  if (minutesLeft === 0) return el("p", { class: "unit-backup" }, el("strong", {}, "0"), "Backup has probably run out. Get someone there now.");
+  const runsOut = clockTime(new Date(Date.now() + minutesLeft * 60000).toISOString());
+  return el("p", { class: "unit-backup" }, el("strong", {}, String(minutesLeft)), `minutes of backup left, runs out around ${runsOut}`);
+}
+
 function respondButton(unit) {
+  if (!can("respond")) return el("p", { class: "muted" }, "Waiting for someone on the call list to respond.");
   const button = el("button", { class: "btn btn-respond btn-small", type: "button" }, "We're responding");
   button.addEventListener("click", () =>
     withButton(button, () => guarded(api("POST", `/api/ack/${encodeURIComponent(unit.device_id)}`, {}))).then(refreshBoard));
@@ -180,6 +222,7 @@ async function refreshBoard() {
     if (currentView() === "units") renderUnits();
     headline(units);
     stormBanner(units);
+    attentionPanel(units);
     announce(document.querySelector("#headline h1").textContent);
     document.getElementById("units").replaceChildren(...units.map(unitRow));
     boardMap.showUnits(units);
@@ -206,8 +249,9 @@ async function loadRoster() {
   if (!roster.length) {
     body.replaceChildren(el("div", { class: "empty" },
       el("h2", {}, "No patients yet"),
-      el("p", { class: "muted" }, "Add the first patient, then put their unit ID and token on the power unit."),
-      el("button", { class: "btn", type: "button", onclick: () => openForm() }, "Add patient")));
+      el("p", { class: "muted" }, can("manage_patients") ? "Add the first patient, then put their unit ID and token on the power unit."
+                                                         : "An admin adds patients; they will appear here."),
+      can("manage_patients") ? el("button", { class: "btn", type: "button", onclick: () => openForm() }, "Add patient") : null));
     return;
   }
   body.replaceChildren(el("table", {},
@@ -218,7 +262,9 @@ async function loadRoster() {
       el("td", { class: "col-hide-mobile" }, el("span", { class: `acuity acuity-${p.acuity}` }, String(p.acuity))),
       el("td", { class: "col-hide-mobile" }, p.contacts.map((c) => c.name).join(", ")),
       el("td", { class: "col-hide-mobile code" }, p.device_id),
-      el("td", {}, el("button", { class: "btn btn-quiet btn-small", type: "button", onclick: () => openForm(p) }, "Edit")),
+      el("td", {}, can("manage_patients")
+        ? el("button", { class: "btn btn-quiet btn-small", type: "button", onclick: () => openForm(p) }, "Edit")
+        : el("button", { class: "btn btn-quiet btn-small", type: "button", onclick: () => openDetails(p) }, "Details")),
     ))),
   ));
 }
@@ -251,6 +297,7 @@ async function loadHistory() {
   }
   summary.textContent = historySummary(incidents, historyDays.selectedOptions[0].textContent.toLowerCase());
   document.getElementById("history-kpis").replaceChildren(...responseTiles(incidents));
+  document.getElementById("history-charts").replaceChildren(...historyCharts(incidents, Number(days)));
   if (!incidents.length) {
     body.replaceChildren(el("div", { class: "empty" },
       el("h2", {}, "Nothing to report"),
@@ -272,7 +319,7 @@ function historySummary(incidents, period) {
     (storms ? ` ${plural(storms, "storm notice")} sent ahead of bad weather.` : "");
   if (!outages.length) return `No emergencies in the ${period}.${silentNote}`;
   const answered = outages.filter((i) => i.response_minutes !== null).map((i) => i.response_minutes).sort((a, b) => a - b);
-  const median = answered.length ? answered[Math.floor((answered.length - 1) / 2)] : null;
+  const median = medianOf(answered);
   const response = answered.length
     ? `Someone responded to ${answered.length} of ${outages.length}, with a typical response time of ${durationText(median)}.`
     : "None acknowledged yet.";
@@ -282,12 +329,48 @@ function historySummary(incidents, period) {
 
 const ANSWER_TARGET_MINUTES = 15;
 
+function medianOf(sorted) {
+  return sorted.length ? sorted[Math.floor((sorted.length - 1) / 2)] : null;
+}
+
+// Daily buckets for a month or less, weekly beyond, oldest first.
+function buckets(incidents, days) {
+  const size = (days <= 30 ? 1 : 7) * 86400000;
+  const count = Math.ceil((days * 86400000) / size);
+  const start = Date.now() - count * size;
+  const slots = Array.from({ length: count }, (_, i) => ({
+    label: new Date(start + i * size).toLocaleDateString([], { month: "short", day: "numeric" }), incidents: [] }));
+  for (const incident of incidents) {
+    const index = Math.floor((new Date(incident.started_at).getTime() - start) / size);
+    if (index >= 0 && index < count) slots[index].incidents.push(incident);
+  }
+  return { slots, per: days <= 30 ? "day" : "week" };
+}
+
+function historyCharts(incidents, days) {
+  const emergencies = incidents.filter((i) => EMERGENCY_KINDS.has(i.kind));
+  if (!emergencies.length) return [];
+  const { slots, per } = buckets(emergencies, days);
+  const counts = slots.map((s) => ({ label: s.label, value: s.incidents.length }));
+  const responses = slots.map((s) => ({
+    label: s.label,
+    value: medianOf(s.incidents.filter((i) => i.response_minutes !== null).map((i) => i.response_minutes).sort((a, b) => a - b)),
+  }));
+  return [
+    barChart(counts, { title: `Emergencies per ${per}`, note: "Power outages, stopped machines and help calls",
+                       unit: (n) => (n === 1 ? "emergency" : "emergencies") }),
+    lineChart(responses, { title: "Typical time to respond", note: `Median per ${per}, from the first alert`,
+                           target: ANSWER_TARGET_MINUTES, targetLabel: `${ANSWER_TARGET_MINUTES} min goal`,
+                           format: (v) => (v ? durationText(Math.round(v)) : "0") }),
+  ];
+}
+
 // The numbers an agency is judged on: how fast someone responds, and how often nobody does.
 function responseTiles(incidents) {
   const outages = incidents.filter((i) => EMERGENCY_KINDS.has(i.kind));
   if (!outages.length) return [];
   const answered = outages.filter((i) => i.response_minutes !== null).map((i) => i.response_minutes).sort((a, b) => a - b);
-  const median = answered.length ? answered[Math.floor((answered.length - 1) / 2)] : null;
+  const median = medianOf(answered);
   const onTime = answered.filter((m) => m <= ANSWER_TARGET_MINUTES).length;
   const missed = outages.filter((i) => i.response_minutes === null && i.ended_at !== null).length;
   const tile = (label, value, note) => el("div", { class: "kpi" },
@@ -481,6 +564,128 @@ function openForm(patient) {
   renumber();
   panel.showModal();
   form.querySelector("input:not([disabled])").focus();
+}
+
+// Read only, for care staff: how to reach the patient and their people, and what the plan says.
+function openDetails(patient) {
+  document.getElementById("panel-title").textContent = patient.name;
+  const plan = patient.plan ?? {};
+  const fact = (label, value) => (value || value === 0) ? el("div", {}, el("dt", {}, label), el("dd", {}, String(value))) : null;
+  panelContent.replaceChildren(
+    el("div", { class: "panel-body" },
+      el("dl", { class: "facts" },
+        fact("Address", patient.address),
+        fact("Equipment", patient.equipment),
+        fact("Backup", durationText(patient.backup_minutes)),
+        fact("Acuity", patient.acuity),
+        fact("Unit ID", patient.device_id))),
+    el("div", { class: "panel-body" },
+      el("h3", {}, "Call list, in order"),
+      el("ol", { class: "call-list" }, patient.contacts.map((c) => el("li", {},
+        el("strong", {}, c.name), ` (${c.role}), `, el("a", { href: `tel:${c.phone}` }, c.phone), c.channel === "call" ? ", by call" : ", by text")))),
+    el("div", { class: "panel-body" },
+      el("h3", {}, "Emergency plan"),
+      Object.values(plan).some(Boolean)
+        ? el("dl", { class: "facts" },
+            fact("Backup supplies", plan.supplies),
+            fact("Nearest place with power", [plan.place_name, plan.place_address, plan.place_phone].filter(Boolean).join(", ")),
+            fact("What to do", plan.steps))
+        : el("p", { class: "muted" }, "No plan yet. Ask an admin to add one.")),
+    recentIncidentsBlock(patient),
+    el("div", { class: "panel-body" }, el("div", { class: "panel-actions" },
+      el("button", { class: "btn", type: "button", onclick: () => panel.close() }, "Close"))),
+  );
+  panel.showModal();
+}
+
+// ---- staff and roles (admins) ------------------------------------------------------
+
+const staffForm = document.getElementById("staff-add");
+const staffError = document.getElementById("staff-error");
+let roleOptions = [];
+
+async function loadStaff() {
+  const body = document.getElementById("staff-body");
+  let staff;
+  try {
+    ({ staff, roles: roleOptions } = await guarded(api("GET", "/api/staff")));
+  } catch (error) {
+    body.replaceChildren(el("p", { class: "form-error" }, error.message));
+    return;
+  }
+  const roleSelect = document.getElementById("staff-role");
+  if (!roleSelect.options.length) {
+    roleSelect.replaceChildren(...roleOptions.map((r) => el("option", { value: r.value }, r.label)));
+    roleSelect.value = "nurse";  // the most common grant; admin is a deliberate choice
+  }
+  body.replaceChildren(el("table", { class: "stack-table" },
+    el("thead", {}, el("tr", {}, ["Email", "Role", ""].map((h) => el("th", { scope: "col" }, h)))),
+    el("tbody", {}, staff.map(staffRow))));
+}
+
+function staffRow(person) {
+  const isMe = person.email === me.email;
+  const role = el("select", { class: "input input-small", "aria-label": `Role for ${person.email}`, disabled: isMe },
+    roleOptions.map((r) => el("option", { value: r.value, selected: r.value === person.role }, r.label)));
+  const note = el("span", { class: "form-error", role: "alert", hidden: true });
+  role.addEventListener("change", async () => {
+    note.hidden = true;
+    try {
+      await guarded(api("PUT", "/api/staff", { email: person.email, role: role.value }));
+    } catch (error) {
+      note.textContent = error.message;
+      note.hidden = false;
+      role.value = person.role;
+    }
+  });
+  const remove = el("button", { class: "btn btn-danger btn-small", type: "button", hidden: isMe }, "Remove access");
+  remove.addEventListener("click", async () => {
+    if (remove.dataset.confirm !== "yes") {
+      remove.dataset.confirm = "yes";
+      remove.textContent = "Confirm remove";
+      return;
+    }
+    try {
+      await withButton(remove, () => guarded(api("POST", "/api/staff/remove", { email: person.email })));
+      loadStaff();
+    } catch (error) {
+      note.textContent = error.message;
+      note.hidden = false;
+    }
+  });
+  return el("tr", {},
+    el("td", { "data-label": "Email" }, el("strong", {}, person.email), isMe ? el("span", { class: "muted" }, " (you)") : null),
+    el("td", { "data-label": "Role" }, role, note),
+    el("td", {}, remove));
+}
+
+staffForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  staffError.hidden = true;
+  try {
+    const added = await withButton(staffForm.querySelector("button"), () =>
+      guarded(api("POST", "/api/staff", { email: staffForm.email.value.trim(), role: staffForm.role.value })));
+    staffForm.email.value = "";
+    loadStaff();
+    showNewAccount(added);
+  } catch (error) {
+    staffError.textContent = error.message;
+    staffError.hidden = false;
+  }
+});
+
+// The temporary password exists only in this response; once the panel closes, nobody can see it again.
+function showNewAccount(added) {
+  const label = roleOptions.find((r) => r.value === added.role)?.label ?? added.role;
+  document.getElementById("panel-title").textContent = `${added.email} can now sign in`;
+  const steps = added.temporary_password
+    ? [copyRow("Temporary password", added.temporary_password, true),
+       el("p", {}, `Give them this password in person or by phone, not in the same message as the link. They sign in at ${location.origin}/login as ${label}, then choose their own password under "Change password".`),
+       el("p", { class: "hint muted" }, "This password is shown only once. If it is lost, remove their access and add them again for a new one.")]
+    : [el("p", {}, `They already had a sign-in account, so they keep their current password. Their role is now ${label}.`)];
+  panelContent.replaceChildren(el("div", { class: "panel-body" }, ...steps,
+    el("div", { class: "panel-actions" }, el("button", { class: "btn", type: "button", onclick: () => panel.close() }, "Done"))));
+  panel.showModal();
 }
 
 // Fills latitude and longitude from the address, so staff don't look them up by hand.

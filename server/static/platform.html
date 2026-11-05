@@ -25,9 +25,13 @@
     <a href="#patients" data-view="patients">Patients</a>
     <a href="#history" data-view="history">History</a>
     <a href="#units" data-view="units">Units</a>
+    <a href="#staff" data-view="staff" hidden>Staff</a>
+    <a href="/county" id="county-link" hidden>County view</a>
   </nav>
   <div class="who">
     <span id="who"></span>
+    <span class="tag" id="role"></span>
+    <a class="btn btn-quiet btn-small" href="/account">Change password</a>
     <button class="btn btn-quiet btn-small" id="signout" type="button">Sign out</button>
   </div>
 </header>
@@ -38,6 +42,7 @@
       <div class="storm-banner" id="storm-banner" hidden></div>
       <div class="headline" id="headline"><h1>Loading…</h1></div>
       <p class="visually-hidden" id="announce" aria-live="polite"></p>
+      <details class="attention" id="attention" open hidden></details>
       <div id="units"></div>
     </div>
     <div id="map" role="region" aria-label="Map of patient homes"></div>
@@ -49,10 +54,9 @@
         <h1>Patients</h1>
         <p class="muted">Each patient has one power unit at their outlet and a call list we alert in order.</p>
       </div>
-      <button class="btn" id="add-patient" type="button">Add patient</button>
+      <button class="btn" id="add-patient" type="button" hidden>Add patient</button>
     </div>
     <div id="roster-body"></div>
-    <div class="county-share" id="county-share"></div>
   </section>
 
   <section class="page" id="view-history" aria-label="History" hidden>
@@ -76,6 +80,7 @@
     </div>
     <p class="summary" id="history-summary"></p>
     <div class="kpi-row" id="history-kpis" aria-label="Response at a glance"></div>
+    <div class="chart-row" id="history-charts"></div>
     <div id="history-body"></div>
   </section>
 
@@ -87,6 +92,34 @@
       </div>
     </div>
     <div id="units-body"></div>
+  </section>
+
+  <section class="page" id="view-staff" aria-label="Staff" hidden>
+    <div class="page-head">
+      <div>
+        <h1>Staff and roles</h1>
+        <p class="muted">Who can sign in to Lifeline and what they can do. Adding someone makes their sign-in account and shows you a temporary password to pass on.</p>
+      </div>
+    </div>
+    <form class="staff-add" id="staff-add" novalidate>
+      <div class="field">
+        <label for="staff-email">Work email</label>
+        <input class="input" id="staff-email" name="email" type="email" autocomplete="off" required>
+      </div>
+      <div class="field">
+        <label for="staff-role">Role</label>
+        <select class="input" id="staff-role" name="role"></select>
+      </div>
+      <button class="btn" type="submit">Give access</button>
+      <p class="form-error" id="staff-error" role="alert" hidden></p>
+    </form>
+    <dl class="role-guide">
+      <div><dt>Admin</dt><dd>Everything: patients, unit tokens, family links and staff.</dd></div>
+      <div><dt>Nurse</dt><dd>Live board, “We’re responding”, patient details and call lists, history.</dd></div>
+      <div><dt>Viewer</dt><dd>Live board and history. Can’t respond or see phone numbers.</dd></div>
+      <div><dt>County emergency management</dt><dd>Only the county view: who has no power and how long their backup lasts. No phone numbers.</dd></div>
+    </dl>
+    <div id="staff-body"></div>
   </section>
 </main>
 
