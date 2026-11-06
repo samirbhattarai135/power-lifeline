@@ -3,6 +3,9 @@
 
 #define WIFI_SSID      "your-wifi-or-phone-hotspot"
 #define WIFI_PASSWORD  "your-password"
+// Enterprise Wi-Fi only (eduroam, campus networks): WIFI_SSID is the network name (e.g. "eduroam"),
+// this is your sign-in username, and WIFI_PASSWORD is that account's password. Leave it out for home Wi-Fi or a hotspot.
+// #define WIFI_EAP_USERNAME "you@school.edu"
 
 // Raspberry Pi / laptop running server/app.py, reachable from the ESP32.
 #define SERVER_URL     "http://192.168.1.50:8080/api/report"

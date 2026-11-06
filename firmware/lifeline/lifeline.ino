@@ -16,6 +16,9 @@
 #include "config.h"
 
 // ---- defaults for settings older config.h files don't have ------------------------------
+#ifndef WIFI_EAP_USERNAME
+#define WIFI_EAP_USERNAME ""  // set only for enterprise Wi-Fi such as eduroam
+#endif
 #ifndef BUZZER_PIN
 #define BUZZER_PIN -1
 #endif
@@ -50,7 +53,7 @@ DHT thermometer(TEMP_SENSOR_PIN, TEMP_SENSOR_TYPE);
 #endif
 #endif
 
-const char *FIRMWARE_VERSION = "0.3.0";
+const char *FIRMWARE_VERSION = "0.3.1";
 
 const uint32_t DEBOUNCE_MS       = 2000;   // ignore brownout flicker shorter than this
 const uint32_t HEARTBEAT_MS      = 30000;  // server marks a unit offline after ~90 s of silence
@@ -215,7 +218,12 @@ void ensureWifi() {
   // Status 1 = network not found (often 5 GHz only), 4 = connect failed (often wrong password).
   Serial.printf("WiFi: connecting... (last status %d)\n", WiFi.status());
   WiFi.disconnect();
-  WiFi.begin(settings.ssid.c_str(), settings.password.c_str());
+  if (strlen(WIFI_EAP_USERNAME) > 0) {
+    // Enterprise Wi-Fi (eduroam and most campuses): PEAP sign-in with a username, no CA check.
+    WiFi.begin(settings.ssid.c_str(), WPA2_AUTH_PEAP, WIFI_EAP_USERNAME, WIFI_EAP_USERNAME, settings.password.c_str());
+  } else {
+    WiFi.begin(settings.ssid.c_str(), settings.password.c_str());
+  }
 }
 
 bool sendReport(bool wallPower) {
