@@ -1,5 +1,6 @@
 import { createBoardMap } from "./map.js";
 import { barChart, lineChart } from "./charts.js";
+import { escalationNotes } from "./escalation.js";
 import { ApiError, api, el, clockTime, dateTime, durationText, hazardText, listNames, minutesSince, plural, secondsAgo, stateOf, uptimeText, withButton } from "./common.js";
 
 const BOARD_REFRESH_MS = 2000;
@@ -104,18 +105,18 @@ function stormBanner(units) {
   node.replaceChildren(
     el("h2", {}, "Storm watch"),
     el("ul", {}, lines.map(({ hazard, names }) => el("li", { class: `is-${hazard.level}` },
-      el("strong", {}, hazardText(hazard)), `: ${listNames(names)}`))),
-    callFirst(units),
+      el("strong", {}, hazardText(hazard)), el("span", { class: "visually-hidden" }, ": "), listNames(names)))),
+    callFirst(units) ?? "",
     el("p", { class: "muted" }, "High-risk warnings have been sent to each patient's first contact. Check backups now, most critical first."),
   );
 }
 
-const CALL_FIRST_UNDER_MINUTES = 240;
+const CALL_FIRST_WITHIN_MINUTES = 240;  // four hours of backup or less
 
 // In the storm's path and least able to wait: most critical first, then shortest backup.
 function callFirst(units) {
   const urgent = units
-    .filter((u) => u.hazards.length && u.status !== "outage" && u.backup_minutes < CALL_FIRST_UNDER_MINUTES)
+    .filter((u) => u.hazards.length && u.status !== "outage" && u.backup_minutes <= CALL_FIRST_WITHIN_MINUTES)
     .sort((a, b) => a.acuity - b.acuity || a.backup_minutes - b.backup_minutes);
   if (!urgent.length) return null;
   return el("p", { class: "call-first" }, el("strong", {}, "Call first: "),
@@ -177,6 +178,7 @@ function unitRow(unit) {
   } else {
     lines.push(el("p", { class: "muted" }, `Last report ${secondsAgo(unit.last_seen)}${unit.battery_percent == null ? "" : `, unit battery ${unit.battery_percent}%`}.`));
   }
+  lines.push(...escalationNotes(unit));
   for (const hazard of unit.hazards) {
     lines.push(el("p", { class: "unit-hazard" }, el("span", { class: "tag tag-storm" }, "Storm watch"), ` ${hazardText(hazard)}`));
   }
@@ -373,13 +375,13 @@ function responseTiles(incidents) {
   const median = medianOf(answered);
   const onTime = answered.filter((m) => m <= ANSWER_TARGET_MINUTES).length;
   const missed = outages.filter((i) => i.response_minutes === null && i.ended_at !== null).length;
-  const tile = (label, value, note) => el("div", { class: "kpi" },
+  const tile = (label, value, note, isAlert = false) => el("div", { class: isAlert ? "kpi is-alert" : "kpi" },
     el("p", { class: "kpi-label" }, label), el("p", { class: "kpi-value" }, value), note ? el("p", { class: "kpi-note" }, note) : null);
   return [
     tile("Emergencies", String(outages.length), "power outages, stopped machines and help calls"),
     tile("Typical time to respond", median === null ? "None yet" : durationText(median), "median, from the first alert"),
     tile(`Answered within ${ANSWER_TARGET_MINUTES} minutes`, `${onTime} of ${outages.length}`),
-    tile("Ended with nobody responding", String(missed), missed ? "check these call lists" : null),
+    tile("Ended with nobody responding", String(missed), missed ? "check these call lists" : null, missed > 0),
   ];
 }
 
