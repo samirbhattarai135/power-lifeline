@@ -38,6 +38,7 @@ from notifiers import WHATSAPP_PREFIX, ConsoleNotifier, NtfyNotifier, TwilioNoti
 from records import patient_to_record
 from geocode import MAX_ADDRESS_LENGTH, CensusGeocoder, GeocoderUnavailable
 from respond import RespondTokens
+from empower import EmpowerCounts
 from service import DuplicateDevice, Lifeline, Notifier, OutageStore, PatientStore, utc_now
 from staff import (IdentityProvider, LoginThrottle, PasswordChangeRefused, Sessions, SignInAccounts, StaffAuthenticator, StaffMember,
                    check_new_password, temporary_password)
@@ -190,6 +191,12 @@ class Handler(BaseHTTPRequestHandler):
     def page_family(self, _share_token: str) -> None:
         self._send_file(STATIC / "status.html")
 
+    def no_favicon(self) -> None:
+        # Browsers ask for this on every page; answering keeps a 404 out of the console during demos.
+        self.send_response(HTTPStatus.NO_CONTENT)
+        self.send_header("Cache-Control", "max-age=86400")
+        self.end_headers()
+
     def static_asset(self, name: str) -> None:
         path = (STATIC / name).resolve()
         if not path.is_relative_to(STATIC.resolve()) or not path.is_file():
@@ -238,7 +245,7 @@ class Handler(BaseHTTPRequestHandler):
     # ---- county emergency management ----------------------------------------
 
     def api_county(self) -> None:
-        self._send_json(HTTPStatus.OK, {"homes": self.lifeline.county_view()})
+        self._send_json(HTTPStatus.OK, {"homes": self.lifeline.county_view(), "counties": self.lifeline.county_context()})
 
     # ---- families -----------------------------------------------------------
 
@@ -520,6 +527,7 @@ Handler.routes = [
     Route("GET", r"/s/([A-Za-z0-9_-]{16,})", Handler.page_family),
     Route("GET", r"/county", Handler.page_county),
     Route("GET", r"/api/county", Handler.api_county, needs=Permission.VIEW_COUNTY),
+    Route("GET", r"/favicon\.ico", Handler.no_favicon),
     Route("GET", r"/static/((?:images/)?[A-Za-z0-9_-][A-Za-z0-9_.-]*)", Handler.static_asset),
     Route("POST", r"/api/report", Handler.api_report),
     Route("POST", r"/api/sms-inbound", Handler.api_sms_inbound),
@@ -622,11 +630,12 @@ def incident_view(incident: Outage) -> dict:
         "response_minutes": _minutes_between(incident.started_at, incident.acknowledged_at),
         "alerted": [{"name": a.name, "role": a.role, "at": a.at.isoformat()} for a in incident.alerted],
         "detail": incident.detail,
+        "backup_low_at": incident.backup_low_at.isoformat() if incident.backup_low_at else None,
     }
 
 
 CSV_COLUMNS = ["Started (UTC)", "Ended (UTC)", "Duration (min)", "Type", "Patient", "Unit", "Equipment",
-               "People alerted", "First alert (UTC)", "Responded by", "Response time (min)"]
+               "People alerted", "First alert (UTC)", "Responded by", "Response time (min)", "Backup-low warning (UTC)"]
 
 
 def incidents_csv(incidents: list[Outage]) -> str:
@@ -647,6 +656,7 @@ def incidents_csv(incidents: list[Outage]) -> str:
             _utc_text(i.alerted[0].at) if i.alerted else "",
             i.acknowledged_by or "",
             _blank_if_none(_minutes_between(i.started_at, i.acknowledged_at)),
+            _utc_text(i.backup_low_at) if i.backup_low_at else "",
         )])
     return out.getvalue()
 
@@ -806,12 +816,12 @@ def build_storm_watch(open_incidents: list[Outage]) -> tuple[StormWatch | None, 
     return storm, NwsWeather(user_agent)
 
 
-def run_weather_checks(lifeline: Lifeline, stop: threading.Event, every_seconds: int) -> None:
+def run_every(task: Callable[[], None], stop: threading.Event, every_seconds: int, what: str) -> None:
     while True:
         try:
-            lifeline.refresh_weather()
+            task()
         except Exception:
-            log.exception("storm watch weather check failed")
+            log.exception("%s failed", what)
         if stop.wait(every_seconds):
             return
 
@@ -844,7 +854,8 @@ def main() -> None:
     storm, weather = build_storm_watch(open_incidents)
     respond_tokens = build_respond_tokens()
     lifeline = Lifeline(monitor, store, build_notifier(), outages, storm, weather,
-                        respond_link=lambda incident_id, index: f"{public_url}/api/respond/{respond_tokens.token(incident_id, index)}")
+                        respond_link=lambda incident_id, index: f"{public_url}/api/respond/{respond_tokens.token(incident_id, index)}",
+                        counts=EmpowerCounts() if os.environ.get("LIFELINE_EMPOWER", "on") == "on" else None)
 
     Handler.lifeline = lifeline
     Handler.authenticator = authenticator
@@ -867,7 +878,11 @@ def main() -> None:
     Handler.storm_check_seconds = int(os.environ.get("STORM_CHECK_SECONDS", "300"))
     if weather is not None:
         every = Handler.storm_check_seconds
-        threading.Thread(target=run_weather_checks, args=(lifeline, stop, every), daemon=True, name="weather").start()
+        threading.Thread(target=run_every, args=(lifeline.refresh_weather, stop, every, "storm watch weather check"),
+                         daemon=True, name="weather").start()
+    # Only homes not yet placed in a county are looked up, so a short interval costs nothing once they are.
+    threading.Thread(target=run_every, args=(lifeline.refresh_county_figures, stop, 600, "emPOWER county lookup"),
+                     daemon=True, name="empower").start()
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
     log.info("Lifeline on http://0.0.0.0:%d · storage: %s · %d patients · %d open incidents restored · storm watch %s",
              port, backend_name, len(monitor.patients()), len(open_incidents), os.environ.get("LIFELINE_STORM_WATCH", "on"))

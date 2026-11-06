@@ -11,7 +11,7 @@ import secrets
 import threading
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import asdict, replace
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Protocol
 
@@ -37,6 +37,25 @@ class OutageStore(Protocol):
 class Notifier(Protocol):
     def send(self, notification: Notification) -> None:
         """Deliver it, or raise DeliveryFailed."""
+
+
+@dataclass(frozen=True)
+class CountyFigures:
+    """Medicare beneficiaries in one county using electricity-dependent equipment (HHS emPOWER)."""
+    fips: str
+    name: str             # "Forrest County, MS"
+    power_dependent: int  # any electricity-dependent device
+    home_health: int      # ...who also receive home health services: an agency's market
+    oxygen: int           # ...who also receive oxygen services
+
+
+class PowerDependentCounts(Protocol):
+    def county_at(self, lat: float, lon: float) -> CountyFigures:
+        """The figures for the county containing this point, or raise CountsUnavailable."""
+
+
+class CountsUnavailable(RuntimeError):
+    pass
 
 
 class DeliveryFailed(RuntimeError):
@@ -70,9 +89,10 @@ MAX_BACKOFF_SECONDS = 30.0
 class Lifeline:
     def __init__(self, monitor: Monitor, store: PatientStore, notifier: Notifier, outages: OutageStore,
                  storm: StormWatch | None = None, weather: WeatherSource | None = None,
-                 respond_link: Callable[[str, int], str] | None = None):
+                 respond_link: Callable[[str, int], str] | None = None, counts: PowerDependentCounts | None = None):
         """Pass `storm` and `weather` together to turn Storm Watch on. `respond_link` turns
-        (incident id, alert index) into a one-tap "I'm responding" URL for push alerts."""
+        (incident id, alert index) into a one-tap "I'm responding" URL for push alerts.
+        `counts` adds each county's power-dependent population to the county view."""
         self._monitor = monitor
         self._store = store
         self._notifier = notifier
@@ -82,6 +102,8 @@ class Lifeline:
         self._respond_link = respond_link
         self._weather: dict[str, WeatherReport] = {}  # device_id -> last report, kept if a fetch fails
         self._weather_checked_at: datetime | None = None
+        self._counts = counts
+        self._counties: dict[str, CountyFigures] = {}  # device_id -> its county, kept if a lookup fails
         # ponytail: one lock for every unit; fine for hundreds of patients, shard per unit if it grows.
         self._lock = threading.Lock()
         # Serialises roster edits (which do slow store I/O) without blocking device reports.
@@ -237,7 +259,39 @@ class Lifeline:
             "backup_minutes_left": row["backup_minutes_left"], "outage_started": row["outage_started"],
             "last_seen": row["last_seen"], "responder": _responder_for_family(row["acknowledged_by"]),
             "hazards": [h["headline"] for h in row["hazards"]],
-        } for row in sorted(rows, key=lambda r: (urgency[r["status"]], r["backup_minutes_left"] or 0, r["acuity"]))]
+            "unreached": row["unreached"], "backup_low": row["backup_low"],
+        } for row in sorted(rows, key=lambda r: (urgency[r["status"]], not r["unreached"], r["backup_minutes_left"] or 0, r["acuity"]))]
+
+    def refresh_county_figures(self) -> None:
+        """Look up the county of every home not yet placed. Slow network I/O, so never under the lock."""
+        if self._counts is None:
+            return
+        with self._lock:
+            homes = [(p.device_id, p.lat, p.lon) for p in self._monitor.patients() if p.device_id not in self._counties]
+        for device_id, lat, lon in homes:
+            try:
+                figures = self._counts.county_at(lat, lon)
+            except CountsUnavailable as error:
+                log.warning("emPOWER: no county figures for %s this round: %s", device_id, error)
+                continue
+            with self._lock:
+                self._counties[device_id] = figures
+
+    def county_context(self) -> list[dict]:
+        """Per county with Lifeline homes: how many Medicare beneficiaries there depend on electricity
+        (HHS emPOWER), next to how many Lifeline watches and how many are without power now."""
+        rows = self.snapshot()
+        with self._lock:
+            placed = dict(self._counties)
+        counties: dict[str, dict] = {}
+        for row in rows:
+            figures = placed.get(row["device_id"])
+            if figures is None:
+                continue
+            county = counties.setdefault(figures.fips, {**asdict(figures), "lifeline_homes": 0, "lifeline_outages": 0})
+            county["lifeline_homes"] += 1
+            county["lifeline_outages"] += row["status"] == "outage"
+        return sorted(counties.values(), key=lambda c: -c["lifeline_homes"])
 
     def history(self, days: int, device_id: str | None = None) -> list[Outage]:
         """Incidents that started in the last `days` days, newest first."""
@@ -271,6 +325,7 @@ class Lifeline:
             self._store.save(patient)
             with self._lock:
                 self._monitor.upsert_patient(patient)
+                self._counties.pop(device_id, None)  # the address may have changed: look the county up again
             return patient
 
     def rotate_share_link(self, device_id: str) -> Patient:
@@ -295,6 +350,7 @@ class Lifeline:
                 self._monitor.remove_patient(device_id)
                 self._share_index.pop(existing.share_token, None)
                 self._weather.pop(device_id, None)
+                self._counties.pop(device_id, None)
                 if self._storm is not None:
                     self._storm.forget(device_id, utc_now())
                     self._save(self._storm.drain_changes())
@@ -374,4 +430,4 @@ def _log_send_failure(future: Future) -> None:
         log.error("notification failed", exc_info=future.exception())
 
 
-__all__ = ["Lifeline", "PatientStore", "OutageStore", "Notifier", "DeliveryFailed", "DuplicateDevice", "UnknownDevice", "InvalidPatient", "utc_now"]
+__all__ = ["Lifeline", "PatientStore", "OutageStore", "Notifier", "PowerDependentCounts", "CountyFigures", "CountsUnavailable", "DeliveryFailed", "DuplicateDevice", "UnknownDevice", "InvalidPatient", "utc_now"]

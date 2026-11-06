@@ -86,6 +86,8 @@ class OutageFlow(unittest.TestCase):
         second = m.tick(T0 + ESCALATE)
         self.assertEqual([n.contact.name for n in second], ["Nurse"])
         self.assertIn("58 min", second[0].message)
+        (nobody,) = m.tick(T0 + 2 * ESCALATE)  # the list is exhausted: care staff hear nobody answered
+        self.assertEqual(nobody.contact.name, "Nurse")
         self.assertEqual(m.tick(T0 + 10 * ESCALATE), [])
 
     def test_sms_ack_stops_escalation(self):
@@ -170,7 +172,7 @@ class UnitSensorsAndButtons(unittest.TestCase):
         sent = m.report("unit-01", True, 90, T0, button=Button.HELP)
         self.assertEqual([n.contact.name for n in sent], ["Daughter", "Nurse"])
         self.assertIn("help button was pressed", sent[0].message)
-        self.assertEqual(m.tick(T0 + 10 * ESCALATE), [])  # nobody left to escalate to
+        self.assertEqual(m.tick(T0 + ESCALATE - timedelta(seconds=1)), [])  # nobody left to escalate to
         self.assertEqual(m.report("unit-01", True, 90, T0, button=Button.HELP), [])  # pressing again
         self.assertTrue(m.acknowledge_by_button(sent[1].incident_id, sent[1].alert_index, T0 + timedelta(minutes=2)))
         self.assertEqual(m.status("unit-01", T0)["status"], "ok")
@@ -199,6 +201,95 @@ class UnitSensorsAndButtons(unittest.TestCase):
         self.assertEqual(sensor_readings({"load_amps": 1.5, "room_temp_f": 71}), SensorReadings(1.5, 71.0))
         self.assertEqual(sensor_readings({"load_amps": -3, "room_temp_f": "hot"}), SensorReadings())
         self.assertEqual((button_event({"event": "help"}), button_event({"event": "dance"})), (Button.HELP, None))
+
+
+class NobodyAnswered(unittest.TestCase):
+    def test_exhausted_list_marks_the_home_unreached_and_tells_care_staff_once(self):
+        m = make_monitor()
+        m.report("unit-01", False, 90, T0)
+        m.tick(T0 + ESCALATE)  # Nurse alerted, the last on the list
+        self.assertFalse(m.status("unit-01", T0 + ESCALATE)["unreached"])
+        (notice,) = m.tick(T0 + 2 * ESCALATE)
+        self.assertEqual(notice.contact.name, "Nurse")
+        self.assertIn("Nobody has answered the power-loss alert for Ruth", notice.message)
+        self.assertIn("welfare check", notice.message)
+        self.assertTrue(m.status("unit-01", T0 + 2 * ESCALATE)["unreached"])
+        self.assertEqual(m.tick(T0 + 3 * ESCALATE), [])
+        self.assertTrue(m.acknowledge_by_button(notice.incident_id, notice.alert_index, T0 + 3 * ESCALATE))
+        self.assertEqual(m.status("unit-01", T0)["acknowledged_by"], "Nurse (push button)")
+        self.assertFalse(m.status("unit-01", T0 + 3 * ESCALATE)["unreached"])
+
+    def test_family_only_list_hears_it_themselves(self):
+        m = make_monitor(a_patient(contacts=(Contact("Family", "Son", "+16015550109", Channel.SMS),)))
+        m.report("unit-01", False, 90, T0)
+        (notice,) = m.tick(T0 + ESCALATE)
+        self.assertEqual(notice.contact.name, "Son")
+
+    def test_unanswered_help_call_is_unreached_too(self):
+        m = make_monitor()
+        m.report("unit-01", True, 90, T0, button=Button.HELP)
+        self.assertFalse(m.status("unit-01", T0)["unreached"])
+        (notice,) = m.tick(T0 + ESCALATE)
+        self.assertIn("help-button alert", notice.message)
+
+
+class BackupRunningOut(unittest.TestCase):
+    def test_whole_list_hears_once_when_backup_is_nearly_gone_even_after_an_ack(self):
+        m = make_monitor(a_patient(contacts=(
+            Contact("caregiver", "Daughter", "+16015550101", Channel.SMS),
+            Contact("agency", "Nurse", "+16015550102", Channel.CALL),
+            Contact("county", "County EMA", "+16015550103", Channel.CALL)),
+            plan=EmergencyPlan(place_name="Forrest General")))
+        m.report("unit-01", False, 90, T0)
+        m.acknowledge("unit-01", "Daughter (text reply)", T0 + timedelta(minutes=1))
+        self.assertEqual(m.tick(T0 + timedelta(minutes=29)), [])
+        sent = m.tick(T0 + timedelta(minutes=30))
+        self.assertEqual([n.contact.name for n in sent], ["Daughter", "Nurse", "County EMA"])
+        self.assertIn("backup has about 30 min left and the power is still out", sent[0].message)
+        self.assertIn("get Ruth to Forrest General", sent[0].message)
+        self.assertIn("call 911", sent[0].message)
+        self.assertNotIn("Reply OK", sent[0].message)  # already acknowledged
+        self.assertEqual(m.tick(T0 + timedelta(minutes=40)), [])
+        self.assertTrue(m.status("unit-01", T0)["backup_low"])
+        incident = m.drain_changes()[-1]
+        self.assertEqual(incident.backup_low_at, T0 + timedelta(minutes=30))
+        self.assertEqual([a.name for a in incident.alerted], ["Daughter", "Nurse", "County EMA"])
+        after = make_monitor(open_incidents=[outage_from_record(outage_to_record(incident))])
+        self.assertEqual(after.tick(T0 + timedelta(minutes=41)), [])  # not again after a restart
+
+    def test_unanswered_warning_carries_a_button_and_stops_escalation(self):
+        m = make_monitor(a_patient(backup_minutes=20))
+        m.report("unit-01", False, 90, T0)
+        short = make_monitor(a_patient(backup_minutes=2))
+        short.report("unit-01", False, 90, T0)
+        self.assertEqual(short.tick(T0 + timedelta(seconds=1)), [])  # 1.98 min left rounds to 1, but it's not time yet
+        self.assertEqual(len(short.tick(T0 + timedelta(minutes=1))), 2)
+        self.assertFalse(any("URGENT" in n.message for n in m.tick(T0 + timedelta(minutes=9))))
+        sent = [n for n in m.tick(T0 + timedelta(minutes=10)) if "URGENT" in n.message]  # half of a short backup
+        self.assertEqual([n.contact.name for n in sent], ["Daughter", "Nurse"])
+        self.assertIn("Reply OK 1111", sent[0].message)
+        self.assertTrue(m.acknowledge_by_button(sent[1].incident_id, sent[1].alert_index, T0 + timedelta(minutes=11)))
+        self.assertEqual(m.status("unit-01", T0)["acknowledged_by"], "Nurse (push button)")
+
+    def test_no_backup_or_power_back_means_no_warning(self):
+        m = make_monitor(a_patient(backup_minutes=0))
+        m.report("unit-01", False, 90, T0)
+        m.acknowledge("unit-01", "nurse@agency.org (agency)", T0)
+        self.assertEqual(m.tick(T0 + timedelta(hours=2)), [])
+        m = make_monitor()
+        m.report("unit-01", False, 90, T0)
+        m.report("unit-01", True, 90, T0 + timedelta(minutes=10))
+        self.assertFalse(any("URGENT" in n.message for n in m.tick(T0 + timedelta(minutes=45))))
+
+    def test_warning_stays_out_of_records_until_it_happens_and_room_detail_is_kept(self):
+        m = make_monitor()
+        m.report("unit-01", False, 90, T0)
+        self.assertNotIn("backup_low_at", outage_to_record(m.drain_changes()[-1]))
+        hot = SensorReadings(room_temp_f=96)
+        m.report("unit-01", True, 90, T0, readings=hot)
+        m.report("unit-01", True, 90, T0 + timedelta(minutes=10), readings=hot)
+        room = next(i for i in m.drain_changes() if i.kind is IncidentKind.TEMPERATURE)
+        self.assertEqual(outage_from_record(outage_to_record(room)).detail, "Room too hot: 96°F")
 
 
 class RestartRecovery(unittest.TestCase):
@@ -274,7 +365,8 @@ class SilentUnits(unittest.TestCase):
         self.assertEqual(m.tick(T0 + 10 * SILENT_AFTER), [])  # never reported
         m.report("unit-01", False, 90, T0)
         m.acknowledge("unit-01", "nurse@agency.org (agency)", T0)
-        self.assertEqual(m.tick(T0 + 10 * SILENT_AFTER), [])  # people are already on the way
+        later = m.tick(T0 + 10 * SILENT_AFTER)  # people are already on the way
+        self.assertFalse(any("silent" in n.message for n in later))
 
     def test_power_loss_after_silence_sends_one_alert_not_two(self):
         m = make_monitor()
@@ -299,7 +391,7 @@ class History(unittest.TestCase):
         rows = incidents_csv([incident]).splitlines()
         self.assertEqual(len(rows), 2)
         self.assertIn("Power outage,Ruth,unit-01", rows[1])
-        self.assertTrue(rows[1].endswith("nurse@agency.org (agency),4"))
+        self.assertTrue(rows[1].endswith("nurse@agency.org (agency),4,"))
 
     def test_csv_neutralises_spreadsheet_formulas(self):
         m = make_monitor(a_patient(name="=HYPERLINK(1)"))
@@ -686,6 +778,57 @@ class RosterUseCases(unittest.TestCase):
         self.lifeline.remove_patient("unit-01")
         self.assertIsNone(self.lifeline.family_status("s" * 20))
         self.assertEqual(self.store.saved, {})
+
+
+FORREST = service.CountyFigures(fips="28035", name="Forrest County, MS", power_dependent=1388, home_health=278, oxygen=467)
+
+
+class FakeCounts:
+    def __init__(self):
+        self.asked = []
+
+    def county_at(self, lat, lon):
+        self.asked.append((lat, lon))
+        if lat < 0:
+            raise service.CountsUnavailable("offline")
+        return FORREST
+
+
+class CountyContext(unittest.TestCase):
+    def test_counties_sit_next_to_the_homes_lifeline_watches(self):
+        counts = FakeCounts()
+        lifeline = Lifeline(make_monitor(a_patient(), a_patient(device_id="unit-02", share_token="j" * 20),
+                                         a_patient(device_id="unit-03", share_token="k" * 20, lat=-1.0)),
+                            MemoryStore(), SilentNotifier(), MemoryOutageStore(), counts=counts)
+        self.assertEqual(lifeline.county_context(), [])  # nothing looked up yet
+        lifeline.refresh_county_figures()
+        lifeline.report("unit-02", False, 90)
+        (county,) = lifeline.county_context()  # the home whose lookup failed is left out, not guessed
+        self.assertEqual((county["name"], county["power_dependent"], county["home_health"]), ("Forrest County, MS", 1388, 278))
+        self.assertEqual((county["lifeline_homes"], county["lifeline_outages"]), (2, 1))
+        lifeline.refresh_county_figures()
+        self.assertEqual(len(counts.asked), 4)  # only the unplaced home is asked again
+
+    def test_emPOWER_answer_is_parsed_and_a_miss_is_unavailable(self):
+        from empower import county_from_response
+        answer = {"features": [{"attributes": {"NAMELSAD": "Forrest County", "State": "MS", "FIPS_Code": "28035",
+                                               "Power_Dependent_Devices_DME": 1388, "Home_Health_Services_Any_DME": 278,
+                                               "O2_Services_Any_DME": 467}}]}
+        self.assertEqual(county_from_response(answer), FORREST)
+        for broken in ({"features": []}, {"error": {"code": 400}}, {"features": [{"attributes": {"State": "MS"}}]}):
+            with self.subTest(broken=broken), self.assertRaises(service.CountsUnavailable):
+                county_from_response(broken)
+
+    def test_county_sees_unreached_homes_first(self):
+        lifeline = Lifeline(make_monitor(a_patient(), a_patient(device_id="unit-02", share_token="j" * 20, name="James", backup_minutes=600)),
+                            MemoryStore(), SilentNotifier(), MemoryOutageStore())
+        now = service.utc_now()
+        lifeline._monitor.report("unit-02", False, 90, now - 10 * ESCALATE)
+        lifeline._monitor.tick(now - 9 * ESCALATE)  # James's Nurse, the last on his list
+        lifeline._monitor.tick(now - 8 * ESCALATE)  # ...who doesn't answer either
+        lifeline._monitor.report("unit-01", False, 90, now)
+        homes = lifeline.county_view()
+        self.assertEqual([(h["name"], h["unreached"]) for h in homes], [("James", True), ("Ruth", False)])
 
 
 class LocalAdapters(unittest.TestCase):

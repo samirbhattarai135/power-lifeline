@@ -171,6 +171,7 @@ MACHINE_STOPPED_AFTER = timedelta(seconds=60)  # how long below running current 
 ROOM_TOO_HOT_F = 90.0
 ROOM_TOO_COLD_F = 55.0
 ROOM_ALERT_AFTER = timedelta(minutes=10)       # how long out of range before alerting
+BACKUP_LOW_MINUTES = 30  # backup left when the whole call list hears "backup almost out" (half, for shorter backups)
 
 
 @dataclass(frozen=True)
@@ -210,9 +211,16 @@ class Outage:
     alerted: list[Alerted] = field(default_factory=list)
     detail: str = ""     # storm notices: the warning, e.g. "Ice Storm Warning"
     hazard_id: str = ""  # storm notices: which hazard, so a restart doesn't announce it again
+    backup_low_at: datetime | None = None  # when everyone was told the patient's backup is almost out
 
     def is_escalating(self) -> bool:
         return self.acknowledged_by is None and self.next_escalation_at is not None
+
+    def is_unreached(self, now: datetime, answer_within: timedelta) -> bool:
+        """Everyone on the list has been alerted, the last of them has had time to answer,
+        and nobody has said they're responding: the agency must now report it (42 CFR 484.102(b)(3))."""
+        return (self.ended_at is None and self.acknowledged_by is None and self.next_escalation_at is None
+                and bool(self.alerted) and now - self.alerted[-1].at >= answer_within)
 
     def was_alerted(self, phone: str) -> bool:
         return any(a.phone == phone for a in self.alerted)
@@ -241,6 +249,8 @@ class Unit:
     room: Outage | None = None     # open temperature advisory
     low_current_since: datetime | None = None
     room_out_of_range_since: datetime | None = None
+    # ponytail: kept in memory, so a restart re-sends one "nobody answered" notice; persist it if that matters.
+    unreached_told_for: str | None = None  # id of the emergency whose "nobody answered" notice went out
 
 
 class UnknownDevice(Exception):
@@ -271,6 +281,11 @@ def random_reply_code() -> str:
 
 def new_incident_id() -> str:
     return str(uuid.uuid4())
+
+
+def _alert_index(outage: Outage, phone: str) -> int:
+    """Where this phone was first alerted, so a one-tap "I'm responding" names the right person."""
+    return next(i for i, a in enumerate(outage.alerted) if a.phone == phone)
 
 
 class Monitor:
@@ -398,6 +413,8 @@ class Monitor:
         notifications = []
         for unit in self._units.values():
             notifications += self._escalate(unit, now)
+            notifications += self._check_backup(unit, now)
+            notifications += self._check_unreached(unit, now)
             if self._has_gone_silent(unit, now):
                 notifications += self._start_silence(unit, now)
         return notifications
@@ -525,6 +542,51 @@ class Monitor:
         p = unit.patient
         return (f"Lifeline alert: The help button was pressed at {p.name}'s home, {p.address}. "
                 f"Reply OK {outage.reply_code} if you're responding. Live status: {self._status_link(p)}")
+
+    def _check_backup(self, unit: Unit, now: datetime) -> list[Notification]:
+        """Being acknowledged is not being there. When the backup is nearly gone and the power
+        (or the machine) is still off, the whole call list hears it once, responders included."""
+        outage, p = unit.outage, unit.patient
+        if outage is None or outage.kind not in (IncidentKind.POWER, IncidentKind.MACHINE) or outage.backup_low_at is not None:
+            return []
+        elapsed_minutes = (now - outage.started_at).total_seconds() / 60  # exact: whole minutes would fire a short backup early
+        if p.backup_minutes == 0 or elapsed_minutes < p.backup_minutes - min(BACKUP_LOW_MINUTES, p.backup_minutes / 2):
+            return []
+        left = self._backup_left(p, outage, now)
+        outage.backup_low_at = now
+        outage.next_escalation_at = None  # everyone is told now; nobody is left to escalate to
+        outage.escalation_step = len(p.contacts)
+        still = "the power is still out" if outage.kind is IncidentKind.POWER else f"the {p.equipment.lower()} is still stopped"
+        place = f", or get {p.name} to {p.plan.place_name}" if p.plan.place_name else ""
+        is_open = outage.acknowledged_by is None
+        message = (f"Lifeline URGENT: {p.name}'s {p.equipment.lower()} backup has about {max(1, left)} min left and {still} "
+                   f"at {p.address}. Make sure someone is with {p.name} now{place}. If nobody can get there in time, call 911. "
+                   + (f"Reply OK {outage.reply_code} if you're responding. " if is_open else "")
+                   + f"Live status: {self._status_link(p)}")
+        notifications = []
+        for contact in p.contacts:
+            if not outage.was_alerted(contact.phone):
+                outage.alerted.append(Alerted(contact.name, contact.role, contact.phone, now))
+            index = _alert_index(outage, contact.phone)
+            notifications.append(Notification(contact, message, incident_id=outage.id if is_open else "", alert_index=index if is_open else -1))
+        self._touch(outage)
+        return notifications
+
+    def _check_unreached(self, unit: Unit, now: datetime) -> list[Notification]:
+        """Nobody answered: tell care staff once, so someone is sent or the county is asked for a welfare check."""
+        outage, p = unit.outage, unit.patient
+        if outage is None or unit.unreached_told_for == outage.id or not outage.is_unreached(now, self._escalate_after):
+            return []
+        unit.unreached_told_for = outage.id
+        what = {IncidentKind.POWER: "power-loss", IncidentKind.MACHINE: "machine-stopped", IncidentKind.HELP: "help-button"}[outage.kind]
+        minutes = int((now - outage.started_at).total_seconds() // 60)
+        after = f" after {minutes} min" if minutes else ""
+        message = (f"Lifeline: Nobody has answered the {what} alert for {p.name} at {p.address}{after}, "
+                   f"although everyone on the call list was alerted. Send someone now, or ask county emergency management "
+                   f"for a welfare check. Reply OK {outage.reply_code} if you're responding. Live status: {self._status_link(p)}")
+        alerted = [c for c in p.contacts if outage.was_alerted(c.phone)]
+        recipients = [c for c in alerted if c.is_care_staff()] or alerted
+        return [Notification(c, message, incident_id=outage.id, alert_index=_alert_index(outage, c.phone)) for c in recipients]
 
     def _unused_reply_code(self) -> str:
         """Codes must be unique among open outages or "OK <code>" would be ambiguous again."""
@@ -657,6 +719,8 @@ class Monitor:
             "backup_minutes_left": self._backup_left(p, outage, now) if outage else None,
             "acknowledged_by": outage.acknowledged_by if outage else None,
             "contacts_alerted": outage.alerted_names() if outage else [],
+            "unreached": outage.is_unreached(now, self._escalate_after) if outage else False,
+            "backup_low": outage.backup_low_at is not None if outage else False,
             "attention": self._attention(unit, status),
         }
 

@@ -116,9 +116,11 @@ def outage_to_record(outage: Outage) -> dict[str, Any]:
         "acknowledged_by": outage.acknowledged_by,
         "acknowledged_at": _iso(outage.acknowledged_at),
         "alerted": [{"name": a.name, "role": a.role, "phone": a.phone, "at": a.at.isoformat()} for a in outage.alerted],
-        # Storm-only columns come from migration 003; leaving them out of power and silent
-        # incidents keeps those saving on a database that only has 002.
-        **({"detail": outage.detail, "hazard_id": outage.hazard_id} if outage.kind is IncidentKind.STORM else {}),
+        # Columns from later migrations are left out while unused, so saves keep working on a
+        # database that doesn't have them yet: detail and hazard_id (003), backup_low_at (006).
+        **({"hazard_id": outage.hazard_id} if outage.kind is IncidentKind.STORM else {}),
+        **({"detail": outage.detail} if outage.detail else {}),
+        **({"backup_low_at": outage.backup_low_at.isoformat()} if outage.backup_low_at else {}),
     }
 
 
@@ -140,6 +142,7 @@ def outage_from_record(record: dict[str, Any]) -> Outage:
                  for a in record.get("alerted") or []],
         detail=record.get("detail") or "",
         hazard_id=record.get("hazard_id") or "",
+        backup_low_at=_datetime(record.get("backup_low_at")),
     )
 
 
