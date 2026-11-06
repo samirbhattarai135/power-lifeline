@@ -507,3 +507,44 @@ p.backup-clock.is-empty { display: block; color: var(--color-out); }
 .call-first ol { margin: var(--space-2xs) 0 0; padding-left: var(--space-lg); display: grid; gap: var(--space-xs); }
 .call-first li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs) var(--space-sm); }
 .call-first li .btn { margin: 0; text-decoration: none; }
+
+/* ---- triage mode: a ranked line per home when many need someone at once -------------- */
+#units.is-triage > .triage-row { padding: 0; gap: 0; }
+.triage-line { display: grid; grid-template-columns: 2rem minmax(0, 1fr) auto; grid-template-areas: "rank who clock" "rank meta action"; align-items: center; gap: var(--space-2xs) var(--space-sm); padding: var(--space-sm) var(--space-md) var(--space-sm) var(--space-lg); }
+.triage-line > .rank-badge { grid-area: rank; align-self: start; margin-top: 2px; }
+.triage-line > .triage-who { grid-area: who; }
+.triage-line > .row-clock { grid-area: clock; justify-self: end; }
+.triage-line > .triage-meta { grid-area: meta; margin: 0; font-size: var(--text-sm); color: var(--color-ink-muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.triage-line > .btn, .triage-line > a.btn { grid-area: action; justify-self: end; margin: 0; min-height: 40px; padding-inline: var(--space-md); font-size: var(--text-sm); text-decoration: none; }
+.triage-who { all: unset; cursor: pointer; display: flex; align-items: baseline; gap: var(--space-xs); min-width: 0; border-radius: var(--radius-sm); }
+.triage-who:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }
+.triage-who strong { font-size: var(--text-lg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.triage-chevron { color: var(--color-ink-muted); font-size: var(--text-sm); }
+.triage-meta .triage-status { margin-right: var(--space-2xs); }
+.rank-badge { width: 1.75rem; height: 1.75rem; border-radius: 50%; display: grid; place-items: center; font: 800 var(--text-sm) / 1 var(--font-body); background: var(--color-quiet); color: var(--color-on-ink); }
+.rank-badge.is-out { background: var(--color-out); }
+.rank-badge.is-acked { background: var(--color-acked); color: var(--color-ink); }
+.row-clock { font-weight: 800; font-size: var(--text-lg); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.row-clock.is-urgent { color: var(--color-out); }
+.row-clock.is-quiet { font-size: var(--text-sm); font-weight: 700; color: var(--color-ink-muted); }
+.triage-status { font: 700 var(--text-sm) / 1 var(--font-body); padding: var(--space-2xs) var(--space-sm); border-radius: 999px; white-space: nowrap; }
+.triage-status.is-out { background: var(--color-out); color: var(--color-on-ink); }
+.triage-status.is-acked { background: var(--color-acked); color: var(--color-ink); }
+.triage-status.is-quiet { background: var(--color-quiet-wash); color: var(--color-ink); }
+.triage-row > .action-card.is-expanded { padding: 0 var(--space-md) var(--space-lg) var(--space-lg); background: none; box-shadow: none; border: 0; }
+.triage-row > .action-card.is-expanded > .unit-head { display: none; }
+.triage-row.is-open > .triage-line { border-bottom: var(--rule-hair); }
+
+/* Numbered pins on the map, matching the list. */
+.rank-pin-icon { background: none; border: 0; }
+.rank-pin { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font: 800 13px / 1 var(--font-body); color: var(--color-on-ink); background: var(--color-quiet); border: 2px solid var(--color-on-ink); box-shadow: 0 1px 4px var(--color-shadow); }
+.rank-pin.is-out { background: var(--color-out); }
+.rank-pin.is-acked { background: var(--color-acked); color: var(--color-ink); }
+
+@media (max-width: 640px) {
+  .triage-line { grid-template-areas: "rank who clock" "rank meta meta" "rank action action"; }
+  .triage-line > .btn, .triage-line > a.btn { justify-self: stretch; }
+}
+/* In a storm, homes with power shrink to one line so the ranked list stays in view. */
+#units.is-triage > .unit:not(.triage-row) { padding-block: var(--space-xs); }
+#units.is-triage > .unit:not(.triage-row) > :not(.unit-head) { display: none; }

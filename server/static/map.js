@@ -32,10 +32,10 @@ export function conditionsText(c) {
   return parts.join(", ");
 }
 
-const NO_MAP = { showUnits() {}, showWeather() {}, weatherUnavailable() {}, resize() {}, focus() {} };
+const NO_MAP = { showUnits() {}, showWeather() {}, weatherUnavailable() {}, resize() {}, focus() {}, fitTo() {}, showRanks() {} };
 
 /** `labelFor(unit)` gives the board's wording for a unit, shared with the list beside the map. */
-export function createBoardMap(container, { center, labelFor }) {
+export function createBoardMap(container, { center, labelFor, onSelect = () => {} }) {
   if (typeof window.L === "undefined") {
     container.replaceChildren(el("p", { class: "map-unavailable" },
       "Map unavailable: the map library didn't load. Everything else on this page still works; reload to try again."));
@@ -52,6 +52,7 @@ export function createBoardMap(container, { center, labelFor }) {
       .map(([state, token]) => [state, tokens.getPropertyValue(token).trim()]));
   const markers = new Map();
   const tempLabels = new Map();
+  const rankPins = new Map();  // device id -> numbered pin, matching the triage list
   let fitted = false;
   let lastUnits = [];
 
@@ -124,6 +125,25 @@ export function createBoardMap(container, { center, labelFor }) {
   }
 
   return {
+    /** Numbered pins on the homes that need someone, in triage order; a tap selects that home. */
+    showRanks(ranked) {
+      const live = new Set(ranked.map((u) => u.device_id));
+      for (const [id, pin] of rankPins) if (!live.has(id)) { pin.remove(); rankPins.delete(id); }
+      ranked.forEach((unit, index) => {
+        const html = `<span class="rank-pin is-${stateOf(unit)}">${index + 1}</span>`;
+        let pin = rankPins.get(unit.device_id);
+        if (!pin) {
+          pin = L.marker([unit.lat, unit.lon], { keyboard: false, zIndexOffset: 1000 }).addTo(map);
+          pin.on("click", () => onSelect(unit.device_id));
+          rankPins.set(unit.device_id, pin);
+        }
+        pin.setLatLng([unit.lat, unit.lon]).setIcon(L.divIcon({ className: "rank-pin-icon", html, iconSize: [26, 26] }));
+      });
+    },
+    fitTo(units) {
+      fitted = true;  // the first-load overview must not undo this
+      if (units.length) map.flyToBounds(L.latLngBounds(units.map((u) => [u.lat, u.lon])).pad(0.3), { maxZoom: 12, duration: 0.8 });
+    },
     focus(unit) {
       map.flyTo([unit.lat, unit.lon], Math.max(map.getZoom(), 12), { duration: 0.6 });
       markers.get(unit.device_id)?.openTooltip();

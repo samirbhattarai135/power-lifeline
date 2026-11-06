@@ -1,6 +1,6 @@
 import { createBoardMap } from "./map.js";
 import { barChart, lineChart } from "./charts.js";
-import { actionCard, needsAction, renderKeyed, situationChips, startClock } from "./actions.js";
+import { TRIAGE_AT, actionCard, needsAction, renderKeyed, situationChips, startClock, triageOrder, triageRow } from "./actions.js";
 import { createAlarm } from "./alarm.js";
 import { escalationNotes } from "./escalation.js";
 import { ApiError, api, el, clockTime, dateTime, durationText, hazardText, listNames, minutesSince, plural, secondsAgo, stateOf, uptimeText, withButton } from "./common.js";
@@ -71,8 +71,45 @@ function labelFor(unit) {
   return unit.acknowledged_by ? `${what}, responding` : what;
 }
 
-// A chip or a name was tapped: bring that home's card into view and show it on the map.
+// ---- the list beside the map ------------------------------------------------------------
+// Up to TRIAGE_AT homes needing someone: full action cards. From then on (a storm), a ranked
+// one-line-per-home list with numbered map pins; a tapped line opens its full card.
+
+const openRows = new Set();
+let wasTriage = false;
+const locate = (unit) => boardMap.focus(unit);
+
+function renderBoardList(units) {
+  const active = triageOrder(units);
+  const triage = active.length >= TRIAGE_AT;
+  const container = document.getElementById("units");
+  container.classList.toggle("is-triage", triage);
+  const ranks = new Map(active.map((u, index) => [u.device_id, index + 1]));
+  const ordered = triage ? [...active, ...units.filter((u) => !needsAction(u))] : units;
+  renderKeyed(container,
+    ordered.map((u) => (triage && ranks.has(u.device_id) ? { ...u, rank: ranks.get(u.device_id), open: openRows.has(u.device_id) } : u)),
+    (u) => (u.rank ? triageRow(u, u.rank, { respondButton, canRespond: can("respond"), open: u.open, onToggle: toggleRow, onLocate: locate })
+      : needsAction(u) ? actionCard(u, { respondButton, onLocate: locate }) : unitRow(u)));
+  boardMap.showRanks(triage ? active : []);
+  if (triage && !wasTriage) boardMap.fitTo(active);
+  wasTriage = triage;
+}
+
+function toggleRow(unit) {
+  if (openRows.has(unit.device_id)) openRows.delete(unit.device_id);
+  else { openRows.add(unit.device_id); locate(unit); }
+  renderBoardList(lastUnits);
+}
+
+// A pin on the map was tapped: open that home's line and bring it into view.
+function selectDevice(deviceId) {
+  const unit = lastUnits.find((u) => u.device_id === deviceId);
+  if (unit) jumpTo(unit);
+}
+
+// A chip, pin or name was tapped: bring that home's card into view and show it on the map.
 function jumpTo(unit) {
+  if (wasTriage && !openRows.has(unit.device_id)) { openRows.add(unit.device_id); renderBoardList(lastUnits); }
   const card = document.querySelector(`#units [data-key="${CSS.escape(unit.device_id)}"]`);
   card?.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
   card?.querySelector("button, a")?.focus({ preventScroll: true });
@@ -211,7 +248,7 @@ function respondButton(unit) {
 }
 
 const alarm = createAlarm(document.getElementById("sound-toggle"));
-const boardMap = createBoardMap(document.getElementById("map"), { center: MAP_CENTER, labelFor });
+const boardMap = createBoardMap(document.getElementById("map"), { center: MAP_CENTER, labelFor, onSelect: (id) => selectDevice(id) });
 const WEATHER_REFRESH_MS = 60000;
 
 async function refreshWeather() {
@@ -239,8 +276,7 @@ async function refreshBoard() {
     stormBanner(units);
     attentionPanel(units);
     announce(document.querySelector("#headline h1").textContent);
-    renderKeyed(document.getElementById("units"), units,
-      (unit) => (needsAction(unit) ? actionCard(unit, { respondButton, onLocate: (u) => boardMap.focus(u) }) : unitRow(unit)));
+    renderBoardList(units);
     boardMap.showUnits(units);
   } catch (error) {
     lastBoard = "";  // force a full redraw once the server answers again

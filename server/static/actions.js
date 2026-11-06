@@ -25,7 +25,11 @@ function liveTime(kind, iso) {
 function tick(node) {
   const now = Date.now();
   if (node.dataset.since) node.textContent = clockText(now - Date.parse(node.dataset.since));
-  if (node.dataset.until) node.textContent = clockText(Date.parse(node.dataset.until) - now);
+  if (node.dataset.until) {
+    const left = Date.parse(node.dataset.until) - now;
+    // A backup clock at zero says so in words; other countdowns (next alert) just stop at 0:00.
+    node.textContent = left <= 0 && node.closest(".backup-clock, .row-clock") ? "Out now" : clockText(left);
+  }
   const meter = node.closest(".backup-clock");
   if (meter && node.dataset.until) {
     const left = Date.parse(node.dataset.until) - now;
@@ -83,6 +87,11 @@ function callTargets(unit) {
   if (next) return [next];
   const staff = unit.contacts.find((c) => CARE_STAFF.test(c.role));
   return [...new Set([staff, unit.contacts[0]].filter(Boolean))];
+}
+
+// Short enough for a row button: care staff are "nurse", family keep their name ("Wife", "Son (call)").
+function shortName(contact) {
+  return CARE_STAFF.test(contact.role) ? "nurse" : contact.name;
 }
 
 function callList(unit) {
@@ -197,4 +206,52 @@ export function situationChips(units, onPick) {
   return el("div", { class: "situation", role: "list" }, chips.map(({ kind, matches }) =>
     el("button", { class: `chip is-${kind.tone}`, type: "button", role: "listitem", onclick: () => onPick(matches[0]) },
       kind.label(matches.length))));
+}
+
+// ---- triage mode: many homes at once -------------------------------------------------
+
+export const TRIAGE_AT = 4;  // from this many homes needing someone, cards fold into a ranked list
+
+const URGENCY = (u) => (u.status === "offline" ? 3 : u.acknowledged_by ? 2 : u.unreached ? 0 : 1);
+
+/** Homes that need someone, most urgent first: nobody answering, then waiting, then someone
+    responding, then silent units; within each, the least backup left first. */
+export function triageOrder(units) {
+  const left = (u) => (u.status === "outage" && u.backup_minutes ? Date.parse(u.outage_started) + u.backup_minutes * 60000 : Infinity);
+  return units.filter(needsAction).sort((a, b) => URGENCY(a) - URGENCY(b) || left(a) - left(b));
+}
+
+function rowStatus(unit) {
+  if (unit.status === "offline") return ["Unit silent", "quiet"];
+  if (unit.acknowledged_by) return ["Responding", "acked"];
+  if (unit.backup_low) return ["Backup almost out", "out"];
+  if (unit.unreached) return ["No answer", "out"];
+  return ["Waiting", "out"];
+}
+
+function rowClock(unit) {
+  if (unit.status === "offline") return el("span", { class: "row-clock is-quiet" }, "silent ", liveTime("since", unit.last_seen));
+  if (!unit.backup_minutes || unit.emergency === "help") return el("span", { class: "row-clock" }, unit.emergency === "help" ? "help" : "no backup");
+  const runsOut = new Date(Date.parse(unit.outage_started) + unit.backup_minutes * 60000).toISOString();
+  const urgent = Date.parse(runsOut) - Date.now() < URGENT_MINUTES * 60000;
+  return el("span", { class: `row-clock${urgent ? " is-urgent" : ""}` }, liveTime("until", runsOut));
+}
+
+/** One line per home: rank, who and where, time left, status, and the single most useful action.
+    Tapping the line opens the full card underneath. */
+export function triageRow(unit, rank, { respondButton, canRespond, open, onToggle, onLocate }) {
+  const [status, tone] = rowStatus(unit);
+  const town = unit.address.split(",").slice(-2, -1)[0]?.trim() ?? "";
+  const primary = canRespond && !unit.acknowledged_by && unit.status === "outage" ? respondButton(unit)
+    : callTargets(unit)[0] ? callButton(callTargets(unit)[0], `Call ${shortName(callTargets(unit)[0])}`) : null;
+  const line = el("div", { class: "triage-line" },
+    el("span", { class: `rank-badge is-${stateOf(unit)}` }, String(rank)),
+    el("button", { class: "triage-who", type: "button", "aria-expanded": String(open), onclick: () => onToggle(unit) },
+      el("strong", {}, unit.name), el("span", { class: "triage-chevron", "aria-hidden": "true" }, open ? "▾" : "▸")),
+    rowClock(unit),
+    el("p", { class: "triage-meta" }, el("span", { class: `triage-status is-${tone}` }, status), ` ${town} · ${unit.equipment}`),
+    primary);
+  const card = open ? actionCard(unit, { respondButton, onLocate }) : null;
+  card?.classList.add("is-expanded");
+  return el("article", { class: `unit triage-row is-${stateOf(unit)}${open ? " is-open" : ""}`, "data-device": unit.device_id }, line, card);
 }
