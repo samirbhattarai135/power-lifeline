@@ -719,10 +719,22 @@ class Monitor:
             "backup_minutes_left": self._backup_left(p, outage, now) if outage else None,
             "acknowledged_by": outage.acknowledged_by if outage else None,
             "contacts_alerted": outage.alerted_names() if outage else [],
+            **self._next_alert(unit),
             "unreached": outage.is_unreached(now, self._escalate_after) if outage else False,
             "backup_low": outage.backup_low_at is not None if outage else False,
             "attention": self._attention(unit, status),
         }
+
+    @staticmethod
+    def _next_alert(unit: Unit) -> dict:
+        """Who the escalation reaches next and when, so staff can call them first. Names only:
+        phone numbers are added by the delivery layer for roles allowed to see them."""
+        outage, contacts = unit.outage, unit.patient.contacts
+        if outage is None or not outage.is_escalating() or outage.escalation_step + 1 >= len(contacts):
+            return {"next_alert_at": None, "next_contact": None}
+        upcoming = contacts[outage.escalation_step + 1]
+        return {"next_alert_at": outage.next_escalation_at.isoformat(),
+                "next_contact": {"name": upcoming.name, "role": upcoming.role}}
 
     @staticmethod
     def _attention(unit: Unit, status: str) -> list[str]:

@@ -1,5 +1,7 @@
 import { createBoardMap } from "./map.js";
 import { barChart, lineChart } from "./charts.js";
+import { actionCard, needsAction, renderKeyed, situationChips, startClock } from "./actions.js";
+import { createAlarm } from "./alarm.js";
 import { escalationNotes } from "./escalation.js";
 import { ApiError, api, el, clockTime, dateTime, durationText, hazardText, listNames, minutesSince, plural, secondsAgo, stateOf, uptimeText, withButton } from "./common.js";
 
@@ -69,6 +71,14 @@ function labelFor(unit) {
   return unit.acknowledged_by ? `${what}, responding` : what;
 }
 
+// A chip or a name was tapped: bring that home's card into view and show it on the map.
+function jumpTo(unit) {
+  const card = document.querySelector(`#units [data-key="${CSS.escape(unit.device_id)}"]`);
+  card?.scrollIntoView({ behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth", block: "start" });
+  card?.querySelector("button, a")?.focus({ preventScroll: true });
+  boardMap.focus(unit);
+}
+
 function headline(units) {
   const out = units.filter((u) => u.status === "outage");
   const waiting = out.filter((u) => !u.acknowledged_by);
@@ -78,13 +88,11 @@ function headline(units) {
     node.replaceChildren(el("h1", {}, "No patients yet"), el("p", {}, "Add a patient to start monitoring their power."));
   } else if (!out.length) {
     node.replaceChildren(el("h1", {}, `All ${plural(units.length, "home")} have power`),
-      el("p", {}, "We'll alert the call list the moment that changes."));
+      situationChips(units, jumpTo) ?? el("p", {}, "We'll alert the call list the moment that changes."));
   } else {
-    const responding = out.length - waiting.length;
     const allPower = out.every((u) => (u.emergency ?? "power") === "power");
     node.replaceChildren(el("h1", {}, allPower ? `${plural(out.length, "home")} without power` : `${plural(out.length, "home")} need help now`),
-      el("p", {}, waiting.length ? `${waiting.length} waiting for someone to respond. ${responding ? `${responding} being handled.` : ""}`
-                                 : "Someone is responding to each one."));
+      situationChips(units, jumpTo));
   }
 }
 
@@ -119,8 +127,11 @@ function callFirst(units) {
     .filter((u) => u.hazards.length && u.status !== "outage" && u.backup_minutes <= CALL_FIRST_WITHIN_MINUTES)
     .sort((a, b) => a.acuity - b.acuity || a.backup_minutes - b.backup_minutes);
   if (!urgent.length) return null;
-  return el("p", { class: "call-first" }, el("strong", {}, "Call first: "),
-    urgent.map((u) => `${u.name} (${durationText(u.backup_minutes)} of backup)`).join(", "));
+  // Care staff get a call link per patient (first person on the call list), so storm prep is one tap each.
+  return el("div", { class: "call-first" }, el("strong", {}, "Call first"),
+    el("ol", {}, urgent.map((u) => el("li", {},
+      `${u.name}, ${durationText(u.backup_minutes)} of backup`,
+      u.contacts?.length ? el("a", { class: "btn btn-call btn-small", href: `tel:${u.contacts[0].phone}` }, `Call ${u.contacts[0].name}`) : null))));
 }
 
 // Setup problems that would slow help down, grouped so ten never-seen units read as one line.
@@ -193,12 +204,13 @@ function backupLine(minutesLeft) {
 
 function respondButton(unit) {
   if (!can("respond")) return el("p", { class: "muted" }, "Waiting for someone on the call list to respond.");
-  const button = el("button", { class: "btn btn-respond btn-small", type: "button" }, "We're responding");
+  const button = el("button", { class: "btn btn-respond", type: "button" }, "I'm responding");
   button.addEventListener("click", () =>
     withButton(button, () => guarded(api("POST", `/api/ack/${encodeURIComponent(unit.device_id)}`, {}))).then(refreshBoard));
   return button;
 }
 
+const alarm = createAlarm(document.getElementById("sound-toggle"));
 const boardMap = createBoardMap(document.getElementById("map"), { center: MAP_CENTER, labelFor });
 const WEATHER_REFRESH_MS = 60000;
 
@@ -221,12 +233,14 @@ async function refreshBoard() {
     if (snapshot === lastBoard) return;
     lastBoard = snapshot;
     lastUnits = units;
+    alarm.notice(units);
     if (currentView() === "units") renderUnits();
     headline(units);
     stormBanner(units);
     attentionPanel(units);
     announce(document.querySelector("#headline h1").textContent);
-    document.getElementById("units").replaceChildren(...units.map(unitRow));
+    renderKeyed(document.getElementById("units"), units,
+      (unit) => (needsAction(unit) ? actionCard(unit, { respondButton, onLocate: (u) => boardMap.focus(u) }) : unitRow(unit)));
     boardMap.showUnits(units);
   } catch (error) {
     lastBoard = "";  // force a full redraw once the server answers again
@@ -799,6 +813,8 @@ function showCredentials(patient, title) {
 }
 
 // ---- start -----------------------------------------------------------------------
+
+startClock(document.getElementById("view-board"));
 
 showView();
 refreshBoard();

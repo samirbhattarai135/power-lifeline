@@ -32,7 +32,7 @@ export function conditionsText(c) {
   return parts.join(", ");
 }
 
-const NO_MAP = { showUnits() {}, showWeather() {}, weatherUnavailable() {}, resize() {} };
+const NO_MAP = { showUnits() {}, showWeather() {}, weatherUnavailable() {}, resize() {}, focus() {} };
 
 /** `labelFor(unit)` gives the board's wording for a unit, shared with the list beside the map. */
 export function createBoardMap(container, { center, labelFor }) {
@@ -124,6 +124,10 @@ export function createBoardMap(container, { center, labelFor }) {
   }
 
   return {
+    focus(unit) {
+      map.flyTo([unit.lat, unit.lon], Math.max(map.getZoom(), 12), { duration: 0.6 });
+      markers.get(unit.device_id)?.openTooltip();
+    },
     showUnits(units) {
       lastUnits = units;
       units.forEach(placeMarker);

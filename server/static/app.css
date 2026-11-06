@@ -447,3 +447,63 @@ fieldset > .btn { justify-self: start; }
 .account-form h1 { font-size: var(--text-2xl); }
 .account-form p { margin: 0; }
 .form-success { padding: var(--space-sm) var(--space-md); border-radius: var(--radius-sm); background: var(--color-on-wash); color: oklch(from var(--color-on) calc(l - 0.12) c h); font-weight: 700; }
+
+/* ---- action cards: one per home that needs someone now ---------------------------- */
+.live-time { font-variant-numeric: tabular-nums; }
+.linklike { all: unset; cursor: pointer; border-radius: var(--radius-sm); }
+.linklike:hover { text-decoration: underline; text-underline-offset: 3px; }
+.linklike:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }
+
+/* Backup clock: the one number that decides how fast to move. The bar empties as it runs. */
+.backup-clock { --left: 1; display: grid; grid-template-columns: auto 1fr; align-items: end; column-gap: var(--space-md); row-gap: var(--space-2xs); margin-block: var(--space-xs); }
+.backup-clock-label { grid-column: 1 / -1; font-size: var(--text-sm); font-weight: 700; color: var(--color-ink-muted); }
+.backup-clock-value { font-size: 3.25rem; line-height: 1; font-weight: 800; letter-spacing: -0.02em; color: var(--color-ink); }
+.backup-clock.is-urgent .backup-clock-value, .backup-clock.is-empty .backup-clock-value { color: var(--color-out); }
+.backup-bar { align-self: center; height: 0.75rem; border-radius: 999px; background: var(--color-paper-sunk); overflow: hidden; }
+.backup-bar > span { display: block; height: 100%; width: 100%; background: var(--color-on); transform: scaleX(var(--left)); transform-origin: left; transition: transform 1s linear; }
+.backup-clock.is-urgent .backup-bar > span { background: var(--color-out); }
+.backup-clock-note { grid-column: 1 / -1; font-size: var(--text-sm); color: var(--color-ink-muted); }
+p.backup-clock.is-empty { display: block; color: var(--color-out); }
+
+/* What has happened, in order, and what happens next. */
+.incident-steps { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-2xs); }
+.incident-steps li { position: relative; padding-left: var(--space-lg); }
+.incident-steps li::before { content: ""; position: absolute; left: 0.25rem; top: 0.55em; width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--color-ink-muted); }
+.incident-steps li.is-next { font-weight: 700; }
+.incident-steps li.is-next::before { background: transparent; border: 2px solid var(--color-ink); }
+.incident-steps li.is-handled::before { background: var(--color-acked); }
+
+/* Actions: big enough to hit while walking, all on one line on a laptop. */
+.card-actions { display: flex; flex-wrap: wrap; gap: var(--space-xs); margin-top: var(--space-xs); }
+.card-actions .btn { margin: 0; min-height: 48px; }
+.card-actions .btn-respond { padding-inline: var(--space-xl); }
+.btn-call { background: var(--color-ink); color: var(--color-on-ink); text-decoration: none; }
+.card-actions a.btn-quiet { text-decoration: none; }
+.unit.action-card > p.muted { font-size: var(--text-sm); }
+
+.card-more { font-size: var(--text-sm); }
+.card-more summary { cursor: pointer; font-weight: 700; min-height: 32px; display: flex; align-items: center; }
+.card-more ol { margin: var(--space-2xs) 0 0; padding-left: var(--space-lg); display: grid; gap: var(--space-2xs); }
+.card-more p { margin-top: var(--space-2xs); }
+.plan-steps { white-space: pre-line; }
+
+@media (max-width: 640px) {
+  .card-actions .btn { flex: 1 1 100%; }
+  .backup-clock-value { font-size: 2.5rem; }
+}
+@media (prefers-reduced-motion: reduce) { .backup-bar > span { transition: none; } }
+@media print { .card-actions, .card-more { display: none; } }
+
+/* Situation chips: the counts that matter, each a shortcut to the first home it counts. */
+.situation { display: flex; flex-wrap: wrap; gap: var(--space-xs); margin-top: var(--space-sm); }
+.chip { font: 700 var(--text-sm) / 1 var(--font-body); min-height: 36px; padding: 0 var(--space-md); border-radius: 999px; border: 0; cursor: pointer; background: var(--color-paper-raised); color: var(--color-ink); }
+.chip:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }
+.chip.is-alarm { background: var(--color-on-ink); color: var(--color-out); }
+.chip.is-handled { background: var(--color-acked); color: var(--color-ink); }
+.chip.is-storm { background: var(--color-acked-wash); color: var(--color-ink); }
+.chip.is-quiet { background: var(--color-quiet-wash); color: var(--color-ink); }
+.headline:not(.is-alarm) .chip.is-alarm { background: var(--color-out); color: var(--color-on-ink); }
+.sound-toggle.is-unarmed { border-color: var(--color-out); color: var(--color-out); }
+.call-first ol { margin: var(--space-2xs) 0 0; padding-left: var(--space-lg); display: grid; gap: var(--space-xs); }
+.call-first li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs) var(--space-sm); }
+.call-first li .btn { margin: 0; text-decoration: none; }

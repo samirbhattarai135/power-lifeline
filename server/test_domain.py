@@ -338,6 +338,25 @@ class BoardAttention(unittest.TestCase):
         self.assertEqual(m.status("unit-01", T0)["attention"], ["Unit battery low", "Weak Wi-Fi at the unit"])
 
 
+class NextAlertOnBoard(unittest.TestCase):
+    def test_board_says_who_is_alerted_next_and_when(self):
+        m = make_monitor()
+        m.report("unit-01", False, 90, T0)
+        row = m.status("unit-01", T0)
+        self.assertEqual(row["next_contact"], {"name": "Nurse", "role": "agency"})
+        self.assertEqual(row["next_alert_at"], (T0 + ESCALATE).isoformat())
+        self.assertNotIn("phone", row["next_contact"])
+        m.tick(T0 + ESCALATE)  # the nurse is alerted; nobody is left after her
+        self.assertEqual((m.status("unit-01", T0 + ESCALATE)["next_contact"]), None)
+
+    def test_nothing_is_next_once_someone_responds(self):
+        m = make_monitor()
+        m.report("unit-01", False, 90, T0)
+        m.acknowledge("unit-01", "Daughter (text reply)", T0 + timedelta(seconds=5))
+        row = m.status("unit-01", T0 + timedelta(seconds=5))
+        self.assertEqual((row["next_contact"], row["next_alert_at"]), (None, None))
+
+
 class SilentUnits(unittest.TestCase):
     def test_alerts_care_staff_once_then_announces_return(self):
         m = make_monitor()
@@ -1116,6 +1135,16 @@ class RoleEnforcement(unittest.TestCase):
         self.assertNotIn("status_link", nurse_view)
         admin_view = self.call("admin@a.org", "GET", "/api/patients")[1]["patients"][0]
         self.assertEqual(admin_view["device_token"], TOKEN)
+
+    def test_board_shows_phones_and_plans_only_to_care_staff(self):
+        nurse_unit = self.call("nurse@a.org", "GET", "/api/status")[1]["units"][0]
+        self.assertEqual(nurse_unit["contacts"][0]["phone"], "+16015550101")
+        self.assertIn("plan", nurse_unit)
+        self.assertNotIn("device_token", json.dumps(nurse_unit))
+        viewer_unit = self.call("viewer@a.org", "GET", "/api/status")[1]["units"][0]
+        self.assertNotIn("contacts", viewer_unit)
+        self.assertNotIn("plan", viewer_unit)
+        self.assertNotIn("+16015550101", json.dumps(viewer_unit))
 
     def test_only_responders_can_acknowledge(self):
         app.Handler.lifeline.report("unit-01", False, 90)

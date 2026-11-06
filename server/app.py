@@ -347,7 +347,15 @@ class Handler(BaseHTTPRequestHandler):
     # ---- staff: live board and roster ---------------------------------------
 
     def api_status(self) -> None:
-        self._send_json(HTTPStatus.OK, {"units": self.lifeline.snapshot()})
+        units = self.lifeline.snapshot()
+        if self._account().can(Permission.VIEW_PATIENTS):
+            # Care staff act straight from the board: who to call, and what the plan says.
+            reach = {p.device_id: care_view(p) for p in self.lifeline.roster()}
+            for unit in units:
+                patient = reach.get(unit["device_id"], {})
+                unit["contacts"] = patient.get("contacts", [])
+                unit["plan"] = patient.get("plan", {})
+        self._send_json(HTTPStatus.OK, {"units": units})
 
     def api_staff_ack(self, device_id: str) -> None:
         by = f"{self._staff().email} (agency)"
