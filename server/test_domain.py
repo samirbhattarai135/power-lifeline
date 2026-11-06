@@ -59,13 +59,13 @@ def a_form(**overrides) -> dict:
 SILENT_AFTER = timedelta(minutes=5)
 
 
-def make_monitor(*patients: Patient, codes=None, open_incidents=()) -> Monitor:
+def make_monitor(*patients: Patient, codes=None, open_incidents=(), county=()) -> Monitor:
     codes = iter(codes or ["1111", "2222", "3333"])
     ids = (f"incident-{n}" for n in range(1000))
     return Monitor(list(patients or [a_patient()]), escalate_after=ESCALATE,
                    offline_after=timedelta(seconds=90), status_link=lambda p: f"https://x/s/{p.share_token}",
                    new_reply_code=lambda: next(codes), silent_alert_after=SILENT_AFTER,
-                   open_incidents=list(open_incidents), new_id=lambda: next(ids))
+                   open_incidents=list(open_incidents), new_id=lambda: next(ids), county_contacts=county)
 
 
 class OutageFlow(unittest.TestCase):
@@ -262,8 +262,9 @@ class BackupRunningOut(unittest.TestCase):
         m.report("unit-01", False, 90, T0)
         short = make_monitor(a_patient(backup_minutes=2))
         short.report("unit-01", False, 90, T0)
-        self.assertEqual(short.tick(T0 + timedelta(seconds=1)), [])  # 1.98 min left rounds to 1, but it's not time yet
-        self.assertEqual(len(short.tick(T0 + timedelta(minutes=1))), 2)
+        urgent = lambda ns: [n for n in ns if "URGENT" in n.message]
+        self.assertEqual(urgent(short.tick(T0 + timedelta(seconds=1))), [])  # 1.98 min left rounds to 1, but it's not time yet
+        self.assertEqual(len(urgent(short.tick(T0 + timedelta(minutes=1)))), 2)
         self.assertFalse(any("URGENT" in n.message for n in m.tick(T0 + timedelta(minutes=9))))
         sent = [n for n in m.tick(T0 + timedelta(minutes=10)) if "URGENT" in n.message]  # half of a short backup
         self.assertEqual([n.contact.name for n in sent], ["Daughter", "Nurse"])
@@ -355,6 +356,61 @@ class NextAlertOnBoard(unittest.TestCase):
         m.acknowledge("unit-01", "Daughter (text reply)", T0 + timedelta(seconds=5))
         row = m.status("unit-01", T0 + timedelta(seconds=5))
         self.assertEqual((row["next_contact"], row["next_alert_at"]), (None, None))
+
+
+COUNTY = Contact("county", "Forrest County EMA", "+16015550199", Channel.SMS)
+
+
+class FifteenMinuteEmergency(unittest.TestCase):
+    def test_county_and_care_staff_are_told_once_with_911_as_fallback(self):
+        m = make_monitor(a_patient(backup_minutes=60), county=(COUNTY,))
+        m.report("unit-01", False, 90, T0)
+        m.acknowledge("unit-01", "Daughter (text reply)", T0 + timedelta(minutes=1))
+        self.assertFalse(any("EMERGENCY" in n.message for n in m.tick(T0 + timedelta(minutes=44))))
+        sent = [n for n in m.tick(T0 + timedelta(minutes=45)) if "EMERGENCY" in n.message]
+        self.assertEqual(sorted(n.contact.name for n in sent), ["Forrest County EMA", "Nurse"])
+        self.assertIn("call 911", sent[0].message)
+        self.assertIn("Daughter (text reply) is responding", sent[0].message)
+        self.assertTrue(m.status("unit-01", T0 + timedelta(minutes=45))["critical"])
+        self.assertFalse(any("EMERGENCY" in n.message for n in m.tick(T0 + timedelta(minutes=50))))  # once
+
+    def test_patients_own_county_contact_wins_and_power_back_means_no_alarm(self):
+        own = a_patient(backup_minutes=20, contacts=(Contact("caregiver", "Son", "+16015550111", Channel.SMS),
+                                                     Contact("County EMA", "Lamar EMA", "+16015550198", Channel.SMS)))
+        m = make_monitor(own, county=(COUNTY,))
+        m.report("unit-01", False, 90, T0)
+        sent = [n for n in m.tick(T0 + timedelta(minutes=5)) if "EMERGENCY" in n.message]
+        self.assertEqual([n.contact.name for n in sent], ["Lamar EMA"])
+        m2 = make_monitor(a_patient(backup_minutes=20))
+        m2.report("unit-01", False, 90, T0)
+        m2.report("unit-01", True, 90, T0 + timedelta(minutes=2))
+        self.assertFalse(any("EMERGENCY" in n.message for n in m2.tick(T0 + timedelta(minutes=10))))
+
+
+class CountyWelfareList(unittest.TestCase):
+    def test_lists_every_unanswered_home_per_county_contact(self):
+        ruth, james = a_patient(), a_patient(device_id="unit-02", name="James", share_token="j" * 20, backup_minutes=30)
+        m = make_monitor(ruth, james, county=(COUNTY,))
+        for unit in ("unit-01", "unit-02"):
+            m.report(unit, False, 90, T0)
+        for step in range(1, 4):
+            m.tick(T0 + ESCALATE * step)
+        now = T0 + ESCALATE * 3
+        notes, missing = m.county_digest(now, "nurse@a.org (agency)")
+        self.assertEqual(len(notes), 1)
+        self.assertIn("2 homes", notes[0].message)
+        self.assertIn("1) James", notes[0].message)  # least backup left first
+        self.assertIn("2) Ruth", notes[0].message)
+        self.assertEqual(missing, [])
+        m.acknowledge("unit-02", "Nurse (push button)", now)
+        self.assertIn("1 home ", m.county_digest(now, "x")[0][0].message)
+
+    def test_reports_homes_with_no_county_contact(self):
+        m = make_monitor()
+        m.report("unit-01", False, 90, T0)
+        for step in range(1, 4):
+            m.tick(T0 + ESCALATE * step)
+        self.assertEqual(m.county_digest(T0 + ESCALATE * 3, "x"), ([], ["Ruth"]))
 
 
 class SilentUnits(unittest.TestCase):
@@ -1145,6 +1201,11 @@ class RoleEnforcement(unittest.TestCase):
         self.assertNotIn("contacts", viewer_unit)
         self.assertNotIn("plan", viewer_unit)
         self.assertNotIn("+16015550101", json.dumps(viewer_unit))
+
+    def test_only_care_staff_can_send_the_county_list(self):
+        self.assertEqual(self.call("viewer@a.org", "POST", "/api/county/notify", {})[0], 403)
+        status, body = self.call("nurse@a.org", "POST", "/api/county/notify", {})
+        self.assertEqual((status, body["error"]), (409, "Every home has been answered; there is nothing to send."))
 
     def test_only_responders_can_acknowledge(self):
         app.Handler.lifeline.report("unit-01", False, 90)

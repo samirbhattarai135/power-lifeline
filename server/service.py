@@ -202,6 +202,13 @@ class Lifeline:
             self._save(self._monitor.drain_changes())
         return acknowledged
 
+    def send_unreached_to_county(self, sent_by: str) -> dict:
+        """Staff ask county emergency management for welfare checks on every home nobody answered."""
+        with self._lock:
+            notifications, no_county = self._monitor.county_digest(utc_now(), sent_by)
+        self._dispatch(notifications)
+        return {"sent_to": [n.contact.name for n in notifications], "no_county_contact": no_county}
+
     def acknowledge_by_reply(self, phone: str, text: str) -> ReplyOutcome:
         with self._lock:
             outcome = self._monitor.acknowledge_by_reply(phone, text, utc_now())
@@ -259,8 +266,9 @@ class Lifeline:
             "backup_minutes_left": row["backup_minutes_left"], "outage_started": row["outage_started"],
             "last_seen": row["last_seen"], "responder": _responder_for_family(row["acknowledged_by"]),
             "hazards": [h["headline"] for h in row["hazards"]],
-            "unreached": row["unreached"], "backup_low": row["backup_low"],
-        } for row in sorted(rows, key=lambda r: (urgency[r["status"]], not r["unreached"], r["backup_minutes_left"] or 0, r["acuity"]))]
+            "unreached": row["unreached"], "backup_low": row["backup_low"], "critical": row["critical"],
+        } for row in sorted(rows, key=lambda r: (urgency[r["status"]], not r["critical"], not r["unreached"],
+                                                 r["backup_minutes_left"] or 0, r["acuity"]))]
 
     def refresh_county_figures(self) -> None:
         """Look up the county of every home not yet placed. Slow network I/O, so never under the lock."""

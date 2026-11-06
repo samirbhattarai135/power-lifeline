@@ -32,7 +32,7 @@ from pathlib import Path
 from typing import Callable
 
 from access import InvalidStaffChange, Permission, Role, StaffAccount, StaffDirectory, StaffStore
-from domain import DEVICE_ID_PATTERN, Button, IncidentKind, SensorReadings, InvalidPatient, Monitor, Outage, Patient, ReplyResult, UnitHealth, UnknownDevice
+from domain import DEVICE_ID_PATTERN, Button, Channel, Contact, IncidentKind, SensorReadings, InvalidPatient, Monitor, Outage, Patient, ReplyResult, UnitHealth, UnknownDevice
 from local import JsonFileOutageStore, JsonFilePatientStore, JsonFileStaffStore, SharedPasswordAuthenticator
 from notifiers import WHATSAPP_PREFIX, ConsoleNotifier, NtfyNotifier, TwilioNotifier, is_valid_twilio_signature
 from records import patient_to_record
@@ -243,6 +243,13 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(HTTPStatus.OK, {"acknowledged": acknowledged})
 
     # ---- county emergency management ----------------------------------------
+
+    def api_county_notify(self) -> None:
+        self._json_body()  # JSON-only, so a cross-site form post cannot trigger it
+        result = self.lifeline.send_unreached_to_county(f"{self._account().email} (agency)")
+        if not result["sent_to"] and not result["no_county_contact"]:
+            raise HttpError(HTTPStatus.CONFLICT, "Every home has been answered; there is nothing to send.")
+        self._send_json(HTTPStatus.OK, result)
 
     def api_county(self) -> None:
         self._send_json(HTTPStatus.OK, {"homes": self.lifeline.county_view(), "counties": self.lifeline.county_context()})
@@ -535,6 +542,7 @@ Handler.routes = [
     Route("GET", r"/s/([A-Za-z0-9_-]{16,})", Handler.page_family),
     Route("GET", r"/county", Handler.page_county),
     Route("GET", r"/api/county", Handler.api_county, needs=Permission.VIEW_COUNTY),
+    Route("POST", r"/api/county/notify", Handler.api_county_notify, needs=Permission.RESPOND),
     Route("GET", r"/favicon\.ico", Handler.no_favicon),
     Route("GET", r"/static/((?:images/)?[A-Za-z0-9_-][A-Za-z0-9_.-]*)", Handler.static_asset),
     Route("POST", r"/api/report", Handler.api_report),
@@ -784,6 +792,19 @@ def load_staff(store: StaffStore) -> StaffDirectory:
     return StaffDirectory(store, accounts, bootstrap)
 
 
+def build_county_contacts() -> tuple[Contact, ...]:
+    """LIFELINE_COUNTY_CONTACT="Name|+16015550123|sms" (or |call); several separated by ";". Used for
+    patients whose own call list has no county contact: welfare checks and 15-minute emergencies."""
+    contacts = []
+    for entry in filter(None, (e.strip() for e in os.environ.get("LIFELINE_COUNTY_CONTACT", "").split(";"))):
+        try:
+            name, phone, channel = (part.strip() for part in entry.split("|"))
+            contacts.append(Contact("county", name, phone, Channel(channel)))
+        except (ValueError, InvalidPatient) as error:
+            raise SystemExit(f"LIFELINE_COUNTY_CONTACT entry {entry!r} must look like Name|+16015550123|sms ({error})")
+    return tuple(contacts)
+
+
 def build_notifier() -> Notifier:
     kind = os.environ.get("LIFELINE_NOTIFIER", "console")
     if kind == "console":
@@ -858,6 +879,7 @@ def main() -> None:
         silent_alert_after=timedelta(seconds=int(os.environ.get("SILENT_ALERT_AFTER_SECONDS", "300"))),
         status_link=lambda patient: family_link(public_url, patient),
         open_incidents=open_incidents,
+        county_contacts=build_county_contacts(),
     )
     storm, weather = build_storm_watch(open_incidents)
     respond_tokens = build_respond_tokens()

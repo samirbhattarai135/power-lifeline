@@ -171,6 +171,7 @@ MACHINE_STOPPED_AFTER = timedelta(seconds=60)  # how long below running current 
 ROOM_TOO_HOT_F = 90.0
 ROOM_TOO_COLD_F = 55.0
 ROOM_ALERT_AFTER = timedelta(minutes=10)       # how long out of range before alerting
+CRITICAL_BACKUP_MINUTES = 15  # backup left when county emergency management is told and 911 is the fallback
 BACKUP_LOW_MINUTES = 30  # backup left when the whole call list hears "backup almost out" (half, for shorter backups)
 
 
@@ -251,6 +252,7 @@ class Unit:
     room_out_of_range_since: datetime | None = None
     # ponytail: kept in memory, so a restart re-sends one "nobody answered" notice; persist it if that matters.
     unreached_told_for: str | None = None  # id of the emergency whose "nobody answered" notice went out
+    critical_told_for: str | None = None   # same, for the 15-minute emergency notice (also in memory only)
 
 
 class UnknownDevice(Exception):
@@ -299,8 +301,11 @@ class Monitor:
     def __init__(self, patients: list[Patient], escalate_after: timedelta, offline_after: timedelta,
                  status_link: Callable[[Patient], str], new_reply_code: Callable[[], str] = random_reply_code,
                  silent_alert_after: timedelta = timedelta(minutes=5),
-                 open_incidents: list[Outage] = (), new_id: Callable[[], str] = new_incident_id):
+                 open_incidents: list[Outage] = (), new_id: Callable[[], str] = new_incident_id,
+                 county_contacts: tuple[Contact, ...] = ()):
         self._units: dict[str, Unit] = {}
+        # County emergency management for patients whose own call list names nobody from the county.
+        self._county_contacts = tuple(county_contacts)
         self._escalate_after = escalate_after
         self._offline_after = offline_after  # when the board shows a unit as quiet
         # When someone is alerted about it. Longer than offline_after: a hotspot can take
@@ -414,6 +419,7 @@ class Monitor:
         for unit in self._units.values():
             notifications += self._escalate(unit, now)
             notifications += self._check_backup(unit, now)
+            notifications += self._check_critical(unit, now)
             notifications += self._check_unreached(unit, now)
             if self._has_gone_silent(unit, now):
                 notifications += self._start_silence(unit, now)
@@ -572,6 +578,64 @@ class Monitor:
         self._touch(outage)
         return notifications
 
+    def _county_for(self, patient: Patient) -> list[Contact]:
+        own = [c for c in patient.contacts if "county" in c.role.lower()]
+        return own or list(self._county_contacts)
+
+    @staticmethod
+    def _minutes_left(patient: Patient, outage: Outage, now: datetime) -> float:
+        return patient.backup_minutes - (now - outage.started_at).total_seconds() / 60
+
+    def _is_critical(self, unit: Unit, now: datetime) -> bool:
+        outage, p = unit.outage, unit.patient
+        return (outage is not None and outage.kind in (IncidentKind.POWER, IncidentKind.MACHINE) and p.backup_minutes > 0
+                and self._minutes_left(p, outage, now) <= CRITICAL_BACKUP_MINUTES)
+
+    def _check_critical(self, unit: Unit, now: datetime) -> list[Notification]:
+        """Fifteen minutes of backup left and the power still out: county emergency management and
+        care staff are told once, whoever is responding, with 911 as the fallback. Lifeline can't
+        place a 911 call itself; the message and the board's "Call 911" button put it one tap away."""
+        outage, p = unit.outage, unit.patient
+        if not self._is_critical(unit, now) or unit.critical_told_for == outage.id:
+            return []
+        unit.critical_told_for = outage.id
+        left = max(0, int(self._minutes_left(p, outage, now)))
+        still = "the power is still out" if outage.kind is IncidentKind.POWER else f"the {p.equipment.lower()} is still stopped"
+        who = f"{outage.acknowledged_by} is responding" if outage.acknowledged_by else "Nobody on the call list has responded"
+        message = (f"Lifeline EMERGENCY: {p.name}'s {p.equipment.lower()} has about {left} min of backup left and {still} "
+                   f"at {p.address} ({p.lat:.4f}, {p.lon:.4f}). {who}. If nobody is with {p.name} now, call 911. "
+                   f"Live status: {self._status_link(p)}")
+        recipients = {c.phone: c for c in self._county_for(p) + [c for c in p.contacts if c.is_care_staff()]}
+        return [Notification(c, message) for c in recipients.values()]
+
+    def county_digest(self, now: datetime, sent_by: str) -> tuple[list[Notification], list[str]]:
+        """One message per county contact listing the homes nobody on the call list has answered,
+        for welfare checks. Also returns the names of unreached patients with no county contact."""
+        lists: dict[str, tuple[Contact, list[tuple[float, str]]]] = {}
+        no_county = []
+        for unit in self._units.values():
+            outage, p = unit.outage, unit.patient
+            if outage is None or not outage.is_unreached(now, self._escalate_after):
+                continue
+            county = self._county_for(p)
+            if not county:
+                no_county.append(p.name)
+                continue
+            out_for = int((now - outage.started_at).total_seconds() // 60)
+            left = f", about {max(0, int(self._minutes_left(p, outage, now)))} min of backup left" if p.backup_minutes else ""
+            line = f"{p.name}, {p.address} ({p.equipment.lower()}{left}, out {out_for} min)"
+            urgency = self._minutes_left(p, outage, now) if p.backup_minutes else float("inf")
+            for contact in county:
+                lists.setdefault(contact.phone, (contact, []))[1].append((urgency, line))
+        notifications = []
+        for contact, entries in lists.values():
+            lines = [line for _, line in sorted(entries, key=lambda entry: entry[0])]  # least backup first
+            numbered = " ".join(f"{i}) {line}." for i, line in enumerate(lines, 1))
+            notifications.append(Notification(contact,
+                f"Lifeline welfare check request from {sent_by}: nobody on the call list has answered for "
+                f"{len(lines)} home{'s' if len(lines) != 1 else ''} with power-dependent patients. {numbered}"))
+        return notifications, no_county
+
     def _check_unreached(self, unit: Unit, now: datetime) -> list[Notification]:
         """Nobody answered: tell care staff once, so someone is sent or the county is asked for a welfare check."""
         outage, p = unit.outage, unit.patient
@@ -722,6 +786,7 @@ class Monitor:
             **self._next_alert(unit),
             "unreached": outage.is_unreached(now, self._escalate_after) if outage else False,
             "backup_low": outage.backup_low_at is not None if outage else False,
+            "critical": self._is_critical(unit, now),
             "attention": self._attention(unit, status),
         }
 
