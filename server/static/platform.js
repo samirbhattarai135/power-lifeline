@@ -1,6 +1,7 @@
 import { createBoardMap } from "./map.js";
 import { barChart, lineChart } from "./charts.js";
-import { TRIAGE_AT, actionCard, needsAction, renderKeyed, situationChips, startClock, triageOrder, triageRow } from "./actions.js";
+import { TRIAGE_AT, TRIAGE_FIELDS, actionCard, needsAction, renderKeyed, situationChips, startClock, triageOrder, triageRow, triageTools } from "./actions.js";
+import { applyFilters, filterBar, isFiltering, mountFilterBar, resetState } from "./filters.js";
 import { createAlarm } from "./alarm.js";
 import { escalationNotes } from "./escalation.js";
 import { ApiError, api, el, clockTime, dateTime, durationText, hazardText, listNames, minutesSince, plural, secondsAgo, stateOf, uptimeText, withButton } from "./common.js";
@@ -77,6 +78,8 @@ function labelFor(unit) {
 
 const openRows = new Set();
 let wasTriage = false;
+const filters = { town: null, status: null, equipment: null, search: "" };  // e.g. one town's homes, to send one person to a cluster
+let sendNote = "";
 const locate = (unit) => boardMap.focus(unit);
 
 function renderBoardList(units) {
@@ -85,14 +88,60 @@ function renderBoardList(units) {
   const container = document.getElementById("units");
   container.classList.toggle("is-triage", triage);
   const ranks = new Map(active.map((u, index) => [u.device_id, index + 1]));
-  const ordered = triage ? [...active, ...units.filter((u) => !needsAction(u))] : units;
+  const filtering = isFiltering(TRIAGE_FIELDS, filters);
+  const shown = applyFilters(active, TRIAGE_FIELDS, filters);
+  const ordered = triage ? [...shown, ...(filtering ? [] : units.filter((u) => !needsAction(u)))] : units;
+  const tools = document.getElementById("triage-tools");
+  tools.hidden = !triage;
+  // Rebuilt only when what it shows changes: a heartbeat must not swallow a tap or reset the two-tap send.
+  const toolsKey = JSON.stringify([active.map((u) => [u.address, u.equipment, u.status, u.critical, u.unreached, u.acknowledged_by]), filters, sendNote]);
+  if (triage && tools.dataset.key !== toolsKey) {
+    tools.dataset.key = toolsKey;
+    mountFilterBar(tools, triageTools(active, { state: filters, onChange: setFilter, onReset: resetFilters, canSend: can("respond"),
+      onSendCounty: sendCountyButton, sendNote }));
+  }
   renderKeyed(container,
     ordered.map((u) => (triage && ranks.has(u.device_id) ? { ...u, rank: ranks.get(u.device_id), open: openRows.has(u.device_id) } : u)),
     (u) => (u.rank ? triageRow(u, u.rank, { respondButton, canRespond: can("respond"), open: u.open, onToggle: toggleRow, onLocate: locate })
       : needsAction(u) ? actionCard(u, { respondButton, onLocate: locate }) : unitRow(u)));
   boardMap.showRanks(triage ? active : []);
+
   if (triage && !wasTriage) boardMap.fitTo(active);
   wasTriage = triage;
+}
+
+function setFilter(key, value) {
+  filters[key] = value;
+  renderBoardList(lastUnits);
+  const shown = applyFilters(triageOrder(lastUnits), TRIAGE_FIELDS, filters);
+  boardMap.fitTo(shown.length ? shown : triageOrder(lastUnits));
+}
+
+function resetFilters() {
+  resetState(TRIAGE_FIELDS, filters);
+  renderBoardList(lastUnits);
+  boardMap.fitTo(triageOrder(lastUnits));
+}
+
+// Two taps, because it sends messages: the first arms it, the second sends.
+function sendCountyButton(count) {
+  const button = el("button", { class: "btn btn-county", type: "button" }, `Send ${count} no-answer home${count === 1 ? "" : "s"} to county`);
+  button.addEventListener("click", async () => {
+    if (button.dataset.confirm !== "yes") {
+      button.dataset.confirm = "yes";
+      button.textContent = "Tap again to send the welfare-check list";
+      return;
+    }
+    try {
+      const result = await withButton(button, () => guarded(api("POST", "/api/county/notify", {})));
+      sendNote = (result.sent_to.length ? `Welfare-check list sent to ${listNames(result.sent_to)} at ${clockTime(new Date().toISOString())}.` : "")
+        + (result.no_county_contact.length ? ` No county contact for ${listNames(result.no_county_contact)}: call the county directly.` : "");
+    } catch (error) {
+      sendNote = error.message;
+    }
+    renderBoardList(lastUnits);
+  });
+  return button;
 }
 
 function toggleRow(unit) {
@@ -272,6 +321,7 @@ async function refreshBoard() {
     lastUnits = units;
     alarm.notice(units);
     if (currentView() === "units") renderUnits();
+    if (currentView() === "patients" && roster.length && roster.map((p) => liveState(p.device_id)).join() !== rosterStatusKey) renderRoster();
     headline(units);
     stormBanner(units);
     attentionPanel(units);
@@ -285,6 +335,42 @@ async function refreshBoard() {
     }
   }
 }
+
+// ---- list pages: one structure everywhere (filter bar, then the rows that need action first) ----
+
+const townFromAddress = (address = "") => address.split(",").slice(-2, -1)[0]?.trim() || "Unknown town";
+const liveUnit = (deviceId) => lastUnits.find((u) => u.device_id === deviceId);
+const LIVE_STATUS = { out: "Power out", acked: "Someone responding", quiet: "No signal", on: "Power on" };
+const STATE_ORDER = ["out", "acked", "quiet", "on"];
+const liveState = (deviceId) => { const unit = liveUnit(deviceId); return unit ? stateOf(unit) : "quiet"; };
+const byUrgency = (stateOfItem) => (a, b) => STATE_ORDER.indexOf(stateOfItem(a)) - STATE_ORDER.indexOf(stateOfItem(b));
+
+function statusCell(state) {
+  return el("span", { class: `live-status is-${state}` }, el("span", { class: "state-dot", "aria-hidden": "true" }), LIVE_STATUS[state]);
+}
+
+/** Wire a page's filter bar: every change re-renders that page. */
+function listFilters(fields, state, render, { idPrefix, noun, searchText }) {
+  let shownKey = "";
+  return {
+    mount(items) {
+      // Remount only when the options or choices change: a heartbeat must not close an open dropdown.
+      const key = JSON.stringify([items.map((item) => fields.map((f) => f.value(item))), state]);
+      if (key === shownKey) return applyFilters(items, fields, state, searchText);
+      shownKey = key;
+      mountFilterBar(document.getElementById(`${idPrefix}-tools`), filterBar(items, fields, state, {
+        onChange: (key, value) => { state[key] = value; render(); },
+        onReset: () => { resetState(fields, state); render(); },
+        onSearch: searchText ? (text) => { state.search = text; render(); } : undefined,
+        searchLabel: searchText ? "Search" : undefined, searchText, idPrefix, noun,
+      }));
+      return applyFilters(items, fields, state, searchText);
+    },
+  };
+}
+
+const noMatch = (noun) => el("div", { class: "empty" }, el("h2", {}, `No ${noun} match these filters`),
+  el("p", { class: "muted" }, "Remove a filter above, or reset them."));
 
 // ---- roster --------------------------------------------------------------------
 
@@ -306,9 +392,31 @@ async function loadRoster() {
       can("manage_patients") ? el("button", { class: "btn", type: "button", onclick: () => openForm() }, "Add patient") : null));
     return;
   }
+  renderRoster();
+}
+
+const ROSTER_FIELDS = [
+  { key: "status", label: "Status", value: (p) => liveState(p.device_id), names: LIVE_STATUS, order: STATE_ORDER },
+  { key: "town", label: "Town", value: (p) => townFromAddress(p.address) },
+  { key: "equipment", label: "Equipment", value: (p) => p.equipment },
+  { key: "acuity", label: "Acuity", value: (p) => String(p.acuity), names: { 1: "1, most critical", 2: "2", 3: "3, least critical" }, order: ["1", "2", "3"] },
+];
+const rosterState = { status: null, town: null, equipment: null, acuity: null, search: "" };
+const rosterFilters = listFilters(ROSTER_FIELDS, rosterState, () => renderRoster(), {
+  idPrefix: "roster", noun: "patients", searchText: (p) => `${p.name} ${p.address} ${p.device_id}` });
+let rosterStatusKey = "";
+
+function renderRoster() {
+  if (!roster.length) return;
+  rosterStatusKey = roster.map((p) => liveState(p.device_id)).join();
+  const body = document.getElementById("roster-body");
+  const shown = rosterFilters.mount(roster)
+    .sort((a, b) => byUrgency((p) => liveState(p.device_id))(a, b) || a.acuity - b.acuity || a.name.localeCompare(b.name));
+  if (!shown.length) { body.replaceChildren(noMatch("patients")); return; }
   body.replaceChildren(el("table", {},
-    el("thead", {}, el("tr", {}, ["Patient", "Equipment", "Acuity", "Call list", "Unit", ""].map((h) => el("th", { scope: "col" }, h)))),
-    el("tbody", {}, roster.map((p) => el("tr", {},
+    el("thead", {}, el("tr", {}, ["Status", "Patient", "Equipment", "Acuity", "Call list", "Unit", ""].map((h) => el("th", { scope: "col" }, h)))),
+    el("tbody", {}, shown.map((p) => el("tr", {},
+      el("td", {}, statusCell(liveState(p.device_id))),
       el("td", {}, el("strong", {}, p.name), el("div", { class: "muted" }, p.address)),
       el("td", { class: "col-hide-mobile" }, p.equipment),
       el("td", { class: "col-hide-mobile" }, el("span", { class: `acuity acuity-${p.acuity}` }, String(p.acuity))),
@@ -350,15 +458,40 @@ async function loadHistory() {
   summary.textContent = historySummary(incidents, historyDays.selectedOptions[0].textContent.toLowerCase());
   document.getElementById("history-kpis").replaceChildren(...responseTiles(incidents));
   document.getElementById("history-charts").replaceChildren(...historyCharts(incidents, Number(days)));
+  historyIncidents = incidents;
   if (!incidents.length) {
+    document.getElementById("history-tools").replaceChildren();
     body.replaceChildren(el("div", { class: "empty" },
       el("h2", {}, "Nothing to report"),
       el("p", { class: "muted" }, "Power outages and silent units will be listed here as they happen.")));
     return;
   }
+  renderHistoryTable();
+}
+
+const RESPONSE = { answered: "Someone responded", none: "No one responded", open: "Still open", na: "Not needed" };
+function responseKind(incident) {
+  if (ADVISORY_KINDS.has(incident.kind)) return "na";
+  if (incident.acknowledged_by) return "answered";
+  return incident.ended_at === null ? "open" : "none";
+}
+const HISTORY_FIELDS = [
+  { key: "kind", label: "Type", value: (i) => i.kind, names: KIND_LABEL, order: Object.keys(KIND_LABEL) },
+  { key: "response", label: "Response", value: responseKind, names: RESPONSE, order: Object.keys(RESPONSE) },
+  { key: "town", label: "Town", value: (i) => townFromAddress(liveUnit(i.device_id)?.address) },
+];
+const historyState = { kind: null, response: null, town: null, search: "" };
+const historyFilters = listFilters(HISTORY_FIELDS, historyState, () => renderHistoryTable(), {
+  idPrefix: "history", noun: "incidents", searchText: (i) => `${i.patient_name} ${i.device_id} ${i.detail ?? ""}` });
+let historyIncidents = [];
+
+function renderHistoryTable() {
+  const body = document.getElementById("history-body");
+  const shown = historyFilters.mount(historyIncidents);
+  if (!shown.length) { body.replaceChildren(noMatch("incidents")); return; }
   body.replaceChildren(el("table", { class: "stack-table" },
     el("thead", {}, el("tr", {}, ["Started", "Patient", "What happened", "Lasted", "Alerted", "Response"].map((h) => el("th", { scope: "col" }, h)))),
-    el("tbody", {}, incidents.map(historyRow))));
+    el("tbody", {}, shown.map(historyRow))));
 }
 
 const EMERGENCY_KINDS = new Set(["power", "machine", "help"]);
@@ -482,6 +615,14 @@ function sensorsText(unit) {
   return parts.length ? parts.join(", ") : el("span", { class: "muted" }, "None fitted");
 }
 
+const UNIT_FIELDS = [
+  { key: "status", label: "Status", value: stateOf, names: LIVE_STATUS, order: STATE_ORDER },
+  { key: "town", label: "Town", value: (u) => townFromAddress(u.address) },
+];
+const unitState = { status: null, town: null, search: "" };
+const unitFilters = listFilters(UNIT_FIELDS, unitState, () => renderUnits(), {
+  idPrefix: "units", noun: "units", searchText: (u) => `${u.name} ${u.address} ${u.device_id}` });
+
 function renderUnits() {
   const body = document.getElementById("units-body");
   if (!lastUnits.length) {
@@ -489,12 +630,13 @@ function renderUnits() {
       el("p", { class: "muted" }, "Add a patient and set up their power unit to see it here.")));
     return;
   }
-  const units = [...lastUnits].sort((a, b) => a.name.localeCompare(b.name));
+  const units = unitFilters.mount(lastUnits).sort((a, b) => byUrgency(stateOf)(a, b) || a.name.localeCompare(b.name));
+  if (!units.length) { body.replaceChildren(noMatch("units")); return; }
   body.replaceChildren(el("table", { class: "stack-table" },
     el("thead", {}, el("tr", {}, ["Patient", "Status", "Last report", "Wi-Fi", "Sensors", "Firmware", "Running for"].map((h) => el("th", { scope: "col" }, h)))),
     el("tbody", {}, units.map((unit) => el("tr", {},
       el("td", { "data-label": "Patient" }, el("strong", {}, unit.name), el("div", { class: "muted code" }, unit.device_id)),
-      el("td", { "data-label": "Status" }, el("span", { class: `tag ${stateOf(unit) === "out" ? "tag-out" : ""}` }, labelFor(unit))),
+      el("td", { "data-label": "Status" }, statusCell(stateOf(unit))),
       el("td", { class: "num", "data-label": "Last report" }, unit.last_seen ? secondsAgo(unit.last_seen) : "Never"),
       el("td", { class: "cell-wide", "data-label": "Wi-Fi" }, signalCell(unit.rssi)),
       el("td", { "data-label": "Sensors" }, sensorsText(unit)),

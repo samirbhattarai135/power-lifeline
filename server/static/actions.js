@@ -4,6 +4,7 @@
 // rebuilt when their own data changes, so a tap is never lost to a refresh.
 import { el, clockTime, listNames, stateOf } from "./common.js";
 import { escalationNotes } from "./escalation.js";
+import { filterBar } from "./filters.js";
 
 const WHAT = { power: "Power out", machine: "Machine stopped", help: "Help button pressed" };
 const URGENT_MINUTES = 60;
@@ -66,11 +67,25 @@ function timeline(unit) {
   ];
   if (unit.contacts_alerted.length) steps.push(el("li", { class: "is-done" }, `Alerted ${listNames(unit.contacts_alerted)}`));
   if (unit.acknowledged_by) {
-    steps.push(el("li", { class: "is-handled" }, el("strong", {}, "Responding: "), unit.acknowledged_by));
+    steps.push(el("li", { class: "is-handled" }, el("strong", {}, "Claimed by "), claimedBy(unit)));
   } else if (unit.next_contact) {
     steps.push(el("li", { class: "is-next" }, `Next alert to ${unit.next_contact.name} in `, liveTime("until", unit.next_alert_at)));
   }
   return el("ol", { class: "incident-steps" }, steps);
+}
+
+/** Who has taken this home, short: staff by the name part of their email, family as they replied. */
+export function claimedBy(unit) {
+  const by = unit.acknowledged_by ?? "";
+  return by.endsWith(" (agency)") ? by.replace(" (agency)", "").split("@")[0] : by;
+}
+
+export function townOf(unit) {
+  return unit.address.split(",").slice(-2, -1)[0]?.trim() || "Unknown town";
+}
+
+function call911() {
+  return el("a", { class: "btn btn-911", href: "tel:911" }, "Call 911");
 }
 
 function callButton(contact, label) {
@@ -142,6 +157,7 @@ export function actionCard(unit, { respondButton, onLocate }) {
   }
 
   const actions = el("div", { class: "card-actions" },
+    unit.critical ? call911() : null,
     unit.acknowledged_by ? null : respondButton(unit),
     ...callTargets(unit).map((c) => callButton(c)),
     directions(unit));
@@ -149,6 +165,8 @@ export function actionCard(unit, { respondButton, onLocate }) {
     head, facts,
     unit.emergency === "help" ? null : backupClock(unit),
     timeline(unit),
+    unit.critical ? el("p", { class: "escalation-note is-critical" }, el("span", { class: "tag tag-out" }, "Under 15 minutes"),
+      " County emergency management and care staff have been told. If nobody is with the patient now, call 911.") : null,
     ...escalationNotes(unit),
     actions,
     planDetails(unit),
@@ -158,6 +176,7 @@ export function actionCard(unit, { respondButton, onLocate }) {
 
 function cardLabel(unit) {
   if (unit.status === "offline") return "Unit silent";
+  if (unit.critical) return "Under 15 min";
   if (unit.unreached) return "No answer";
   if (unit.acknowledged_by) return "Someone responding";
   return WHAT[unit.emergency] ?? "Power out";
@@ -191,6 +210,7 @@ export function renderKeyed(container, items, build) {
 // ---- situation at a glance -------------------------------------------------------------
 
 const SITUATION = [
+  { test: (u) => u.status === "outage" && u.critical, label: (n) => `${n} under 15 min: call 911 if nobody is there`, tone: "alarm" },
   { test: (u) => u.status === "outage" && u.unreached, label: (n) => `${n} nobody answering`, tone: "alarm" },
   { test: (u) => u.status === "outage" && u.backup_low, label: (n) => `${n} backup almost out`, tone: "alarm" },
   { test: (u) => u.status === "outage" && !u.acknowledged_by && !u.unreached, label: (n) => `${n} waiting for a responder`, tone: "alarm" },
@@ -212,7 +232,7 @@ export function situationChips(units, onPick) {
 
 export const TRIAGE_AT = 4;  // from this many homes needing someone, cards fold into a ranked list
 
-const URGENCY = (u) => (u.status === "offline" ? 3 : u.acknowledged_by ? 2 : u.unreached ? 0 : 1);
+const URGENCY = (u) => (u.status === "offline" ? 3 : u.critical ? -1 : u.acknowledged_by ? 2 : u.unreached ? 0 : 1);
 
 /** Homes that need someone, most urgent first: nobody answering, then waiting, then someone
     responding, then silent units; within each, the least backup left first. */
@@ -223,7 +243,8 @@ export function triageOrder(units) {
 
 function rowStatus(unit) {
   if (unit.status === "offline") return ["Unit silent", "quiet"];
-  if (unit.acknowledged_by) return ["Responding", "acked"];
+  if (unit.critical) return ["Under 15 min", "out"];
+  if (unit.acknowledged_by) return [`Claimed by ${claimedBy(unit)}`, "acked"];
   if (unit.backup_low) return ["Backup almost out", "out"];
   if (unit.unreached) return ["No answer", "out"];
   return ["Waiting", "out"];
@@ -241,8 +262,9 @@ function rowClock(unit) {
     Tapping the line opens the full card underneath. */
 export function triageRow(unit, rank, { respondButton, canRespond, open, onToggle, onLocate }) {
   const [status, tone] = rowStatus(unit);
-  const town = unit.address.split(",").slice(-2, -1)[0]?.trim() ?? "";
-  const primary = canRespond && !unit.acknowledged_by && unit.status === "outage" ? respondButton(unit)
+  const town = townOf(unit);
+  const primary = unit.critical ? call911()
+    : canRespond && !unit.acknowledged_by && unit.status === "outage" ? respondButton(unit)
     : callTargets(unit)[0] ? callButton(callTargets(unit)[0], `Call ${shortName(callTargets(unit)[0])}`) : null;
   const line = el("div", { class: "triage-line" },
     el("span", { class: `rank-badge is-${stateOf(unit)}` }, String(rank)),
@@ -254,4 +276,34 @@ export function triageRow(unit, rank, { respondButton, canRespond, open, onToggl
   const card = open ? actionCard(unit, { respondButton, onLocate }) : null;
   card?.classList.add("is-expanded");
   return el("article", { class: `unit triage-row is-${stateOf(unit)}${open ? " is-open" : ""}`, "data-device": unit.device_id }, line, card);
+}
+
+// ---- dispatch tools for triage mode -------------------------------------------------
+
+// One status per home for filtering, in the same words the rows use.
+const STATUS_FILTERS = [
+  ["critical", "Under 15 min"], ["unreached", "No answer"], ["waiting", "Waiting for a responder"],
+  ["claimed", "Claimed"], ["silent", "Unit silent"],
+];
+export function statusOf(unit) {
+  if (unit.status === "offline") return "silent";
+  if (unit.critical) return "critical";
+  if (unit.acknowledged_by) return "claimed";
+  return unit.unreached ? "unreached" : "waiting";
+}
+
+export const TRIAGE_FIELDS = [
+  { key: "town", label: "Town", value: townOf },
+  { key: "status", label: "Status", value: statusOf, names: Object.fromEntries(STATUS_FILTERS), order: STATUS_FILTERS.map(([key]) => key) },
+  { key: "equipment", label: "Equipment", value: (u) => u.equipment },
+];
+
+/** The shared filter bar for the triage list, then the county welfare-check request. */
+export function triageTools(active, { state, onChange, onReset, canSend, onSendCounty, sendNote }) {
+  const unreached = active.filter((u) => u.unreached && !u.acknowledged_by).length;
+  return [
+    ...filterBar(active, TRIAGE_FIELDS, state, { onChange, onReset, idPrefix: "triage", noun: "homes" }),
+    canSend && unreached ? onSendCounty(unreached) : null,
+    sendNote ? el("p", { class: "send-note", role: "status" }, sendNote) : null,
+  ];
 }

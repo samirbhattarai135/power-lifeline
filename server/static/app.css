@@ -548,3 +548,42 @@ p.backup-clock.is-empty { display: block; color: var(--color-out); }
 /* In a storm, homes with power shrink to one line so the ranked list stays in view. */
 #units.is-triage > .unit:not(.triage-row) { padding-block: var(--space-xs); }
 #units.is-triage > .unit:not(.triage-row) > :not(.unit-head) { display: none; }
+
+/* ---- dispatch tools: town filter and the county welfare-check request ---------------- */
+.triage-tools { padding: var(--space-sm) var(--space-md) var(--space-sm) var(--space-lg); border-bottom: var(--rule-hair); display: grid; gap: var(--space-xs); background: var(--color-paper-raised); }
+.triage:has(.unit.is-out, .unit.is-acked) > .triage-tools { order: 1; }
+.btn-county { justify-self: start; margin: 0; background: var(--color-paper-raised); color: var(--color-out); border: 2px solid var(--color-out); }
+.btn-county[data-confirm="yes"] { background: var(--color-out); color: var(--color-on-ink); }
+.send-note { margin: 0; font-size: var(--text-sm); font-weight: 700; }
+.btn-911 { background: var(--color-out); color: var(--color-on-ink); text-decoration: none; font-weight: 800; }
+.escalation-note.is-critical { background: var(--color-out); color: var(--color-on-ink); padding: var(--space-sm) var(--space-md); border-radius: var(--radius-sm); font-weight: 700; }
+.escalation-note.is-critical .tag { background: var(--color-on-ink); color: var(--color-out); }
+
+/* Filter bar: one dropdown per question (where, how bad, what equipment), counts in each option. */
+.filter-bar { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; gap: var(--space-xs); align-items: end; }
+.filter-field { display: grid; gap: 2px; min-width: 0; }
+.filter-field label { font-size: var(--text-sm); font-weight: 700; }
+.filter-field select { min-height: 36px; font-size: var(--text-sm); padding-inline: var(--space-xs) var(--space-lg); }
+.filter-reset { margin: 0; min-height: 36px; }
+.filter-reset:disabled { opacity: 0.45; cursor: default; }
+.filter-chosen { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2xs) var(--space-xs); font-size: var(--text-sm); }
+.filter-chosen-label { font-weight: 700; }
+.filter-pill { font: 700 var(--text-sm) / 1 var(--font-body); min-height: 30px; padding: 0 var(--space-sm); border-radius: var(--radius-sm); border: 2px solid var(--color-ink); background: var(--color-paper-raised); color: var(--color-ink); cursor: pointer; }
+.filter-pill:hover { background: var(--color-paper-sunk); }
+.filter-pill:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }
+@media (max-width: 640px) { .filter-bar { grid-template-columns: 1fr 1fr; } .filter-reset { grid-column: 1 / -1; } }
+
+/* ---- list pages: filter bar above every table ------------------------------------- */
+.list-tools { display: grid; gap: var(--space-xs); margin: 0 0 var(--space-lg); padding: var(--space-md); background: var(--color-paper-raised); border: var(--rule-hair); border-radius: var(--radius-md); }
+.list-tools:empty { display: none; }
+.filter-bar.has-search { grid-template-columns: minmax(12rem, 1.4fr) repeat(auto-fit, minmax(9rem, 1fr)) auto; }
+.page .filter-bar:not(.has-search) { grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)) auto; }
+.filter-search input { min-height: 36px; font-size: var(--text-sm); }
+.live-status { display: inline-flex; align-items: center; gap: var(--space-xs); font-weight: 700; font-size: var(--text-sm); white-space: nowrap; }
+.live-status.is-out { color: var(--color-out); }
+@media (max-width: 640px) { .filter-bar.has-search, .page .filter-bar:not(.has-search) { grid-template-columns: 1fr 1fr; } .filter-search { grid-column: 1 / -1; } }
+
+/* County page: short status tags instead of repeated paragraphs. */
+.county-tags { display: flex; flex-wrap: wrap; gap: var(--space-2xs); margin-top: var(--space-2xs); }
+.county-tags .tag.is-critical { background: var(--color-out); color: var(--color-on-ink); }
+.county .list-tools { margin-top: var(--space-lg); }

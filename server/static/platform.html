@@ -43,6 +43,7 @@
       <div class="headline" id="headline"><h1>Loading…</h1></div>
       <p class="visually-hidden" id="announce" aria-live="polite"></p>
       <div class="storm-banner" id="storm-banner" hidden></div>
+      <div class="triage-tools" id="triage-tools" hidden></div>
       <div id="units"></div>
       <details class="attention" id="attention" hidden></details>
     </div>
@@ -57,6 +58,7 @@
       </div>
       <button class="btn" id="add-patient" type="button" hidden>Add patient</button>
     </div>
+    <div class="list-tools" id="roster-tools"></div>
     <div id="roster-body"></div>
   </section>
 
@@ -82,6 +84,7 @@
     <p class="summary" id="history-summary"></p>
     <div class="kpi-row" id="history-kpis" aria-label="Response at a glance"></div>
     <div class="chart-row" id="history-charts"></div>
+    <div class="list-tools" id="history-tools"></div>
     <div id="history-body"></div>
   </section>
 
@@ -92,6 +95,7 @@
         <p class="muted">Each power unit's connection, as of its last report. Units report every 30 seconds.</p>
       </div>
     </div>
+    <div class="list-tools" id="units-tools"></div>
     <div id="units-body"></div>
   </section>
 
@@ -116,7 +120,7 @@
     </form>
     <dl class="role-guide">
       <div><dt>Admin</dt><dd>Everything: patients, unit tokens, family links and staff.</dd></div>
-      <div><dt>Nurse</dt><dd>Live board, “We’re responding”, patient details and call lists, history.</dd></div>
+      <div><dt>Nurse</dt><dd>Live board, “I’m responding”, patient details and call lists, history.</dd></div>
       <div><dt>Viewer</dt><dd>Live board and history. Can’t respond or see phone numbers.</dd></div>
       <div><dt>County emergency management</dt><dd>Only the county view: who has no power and how long their backup lasts. No phone numbers.</dd></div>
     </dl>
