@@ -370,6 +370,9 @@ class FifteenMinuteEmergency(unittest.TestCase):
         sent = [n for n in m.tick(T0 + timedelta(minutes=45)) if "EMERGENCY" in n.message]
         self.assertEqual(sorted(n.contact.name for n in sent), ["Forrest County EMA", "Nurse"])
         self.assertIn("call 911", sent[0].message)
+        county = next(n for n in sent if n.contact.name == "Forrest County EMA")
+        self.assertNotIn("https://x/s/", county.message)  # the family link can acknowledge; outsiders don't get it
+        self.assertIn("https://x/s/", next(n for n in sent if n.contact.name == "Nurse").message)
         self.assertIn("Daughter (text reply) is responding", sent[0].message)
         self.assertTrue(m.status("unit-01", T0 + timedelta(minutes=45))["critical"])
         self.assertFalse(any("EMERGENCY" in n.message for n in m.tick(T0 + timedelta(minutes=50))))  # once

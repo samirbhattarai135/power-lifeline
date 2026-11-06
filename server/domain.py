@@ -603,10 +603,13 @@ class Monitor:
         still = "the power is still out" if outage.kind is IncidentKind.POWER else f"the {p.equipment.lower()} is still stopped"
         who = f"{outage.acknowledged_by} is responding" if outage.acknowledged_by else "Nobody on the call list has responded"
         message = (f"Lifeline EMERGENCY: {p.name}'s {p.equipment.lower()} has about {left} min of backup left and {still} "
-                   f"at {p.address} ({p.lat:.4f}, {p.lon:.4f}). {who}. If nobody is with {p.name} now, call 911. "
-                   f"Live status: {self._status_link(p)}")
-        recipients = {c.phone: c for c in self._county_for(p) + [c for c in p.contacts if c.is_care_staff()]}
-        return [Notification(c, message) for c in recipients.values()]
+                   f"at {p.address} ({p.lat:.4f}, {p.lon:.4f}). {who}. If nobody is with {p.name} now, call 911.")
+        # The family link can acknowledge the alarm, so it goes only to people already on the call list.
+        # County contacts are pointed to their own signed-in view instead.
+        county = {c.phone: c for c in self._county_for(p)}
+        staff = {c.phone: c for c in p.contacts if c.is_care_staff() and c.phone not in county}
+        return ([Notification(c, f"{message} Live list: Lifeline county view.") for c in county.values()]
+                + [Notification(c, f"{message} Live status: {self._status_link(p)}") for c in staff.values()])
 
     def county_digest(self, now: datetime, sent_by: str) -> tuple[list[Notification], list[str]]:
         """One message per county contact listing the homes nobody on the call list has answered,
