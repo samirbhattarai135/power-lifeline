@@ -1177,6 +1177,52 @@ function showCredentials(patient, title) {
   );
 }
 
+// ---- demo board only: the storm simulation -----------------------------------------
+// The server answers 404 here unless it was started with LIFELINE_STORM_SIM=1, so on the real
+// board this panel never appears. Every home it touches is synthetic; the server checks.
+
+const simPanel = document.getElementById("sim-panel");
+const simForm = document.getElementById("sim-form");
+const simStatus = document.getElementById("sim-status");
+let simPolling = null;
+
+function showSim(state) {
+  const first = simPanel.hidden;
+  simPanel.hidden = false;
+  simForm.homes.max = String(state.homes);
+  if (first) simForm.homes.value = String(Math.min(16, state.homes));
+  simStatus.textContent = state.running && state.out < state.planned ? `Storm running: ${state.out} of ${state.planned} homes out so far.`
+    : state.out ? `${plural(state.out, "simulated home")} without power.` : "";
+}
+
+async function refreshSim() {
+  try {
+    showSim(await api("GET", "/api/sim"));
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 404) clearInterval(simPolling);  // the simulation is off here
+  }
+}
+
+async function simAction(button, path, body) {
+  try {
+    showSim(await withButton(button, () => guarded(api("POST", path, body))));
+  } catch (error) {
+    simStatus.textContent = error.message;
+  }
+  refreshBoard();
+}
+
+simForm.addEventListener("submit", (event) => {
+  event.preventDefault();
+  simAction(simForm.querySelector("button[type=submit]"), "/api/sim/storm",
+    { homes: Number(simForm.homes.value), every_seconds: Number(simForm.every.value) });
+});
+document.getElementById("sim-calm").addEventListener("click", (event) => simAction(event.currentTarget, "/api/sim/calm", {}));
+if (can("manage_patients")) {
+  refreshSim();
+  simPolling = setInterval(refreshSim, BOARD_REFRESH_MS);
+}
+
 // ---- start -----------------------------------------------------------------------
 
 startClock(document.getElementById("view-board"));

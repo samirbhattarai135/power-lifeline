@@ -42,6 +42,7 @@ from geocode import MAX_ADDRESS_LENGTH, CensusGeocoder, GeocoderUnavailable
 from respond import RespondTokens
 from empower import EmpowerCounts
 from service import DuplicateDevice, Lifeline, Notifier, OutageStore, PatientStore, utc_now
+from simulation import SimulationRefused, StormSimulation
 from staff import (IdentityProvider, LoginThrottle, PasswordChangeRefused, Sessions, SignInAccounts, StaffAuthenticator, StaffMember,
                    check_new_password, temporary_password)
 from storm import StormWatch, WeatherSource
@@ -118,6 +119,7 @@ class Handler(BaseHTTPRequestHandler):
     twilio_auth_token: str | None
     respond_tokens: RespondTokens
     geocoder: CensusGeocoder
+    simulation: StormSimulation | None = None  # only with LIFELINE_STORM_SIM=1, on a board of synthetic homes
     storm_mode: str = "off"            # on, off or demo; set by main()
     storm_check_seconds: int = 300
     # Set only behind a proxy that overwrites this header (Fly-Client-IP on Fly.io); otherwise
@@ -157,6 +159,8 @@ class Handler(BaseHTTPRequestHandler):
             except InvalidPatient as error:
                 status = HTTPStatus.CONFLICT if isinstance(error, DuplicateDevice) else HTTPStatus.BAD_REQUEST
                 self._send_json(status, {"error": str(error)})
+            except SimulationRefused as error:
+                self._send_json(HTTPStatus.CONFLICT, {"error": str(error)})
             except UnknownDevice:
                 self._send_json(HTTPStatus.NOT_FOUND, {"error": "No patient with that unit ID"})
             except SupabaseError as error:
@@ -364,6 +368,28 @@ class Handler(BaseHTTPRequestHandler):
             raise HttpError(HTTPStatus.BAD_REQUEST, "Choose who to remove.")
         self.staff.remove(self._account().email, email)
         self._send_json(HTTPStatus.OK, {"ok": True})
+
+    # ---- demo board only: the storm simulation ------------------------------
+
+    def _simulation(self) -> StormSimulation:
+        """Off unless the server was started with LIFELINE_STORM_SIM=1; then admins only."""
+        if self.simulation is None:
+            raise HttpError(HTTPStatus.NOT_FOUND, "not found")
+        self._require(Permission.MANAGE_PATIENTS, self.command)
+        return self.simulation
+
+    def api_sim_status(self) -> None:
+        self._send_json(HTTPStatus.OK, self._simulation().status())
+
+    def api_sim_storm(self) -> None:
+        simulation = self._simulation()
+        data = self._json_body()
+        self._send_json(HTTPStatus.OK, simulation.start_storm(data.get("homes"), data.get("every_seconds", 4)))
+
+    def api_sim_calm(self) -> None:
+        simulation = self._simulation()
+        self._json_body()  # JSON-only, so a cross-site form post cannot trigger it
+        self._send_json(HTTPStatus.OK, simulation.calm())
 
     # ---- staff: live board and roster ---------------------------------------
 
@@ -606,6 +632,10 @@ Handler.routes = [
     Route("PUT", r"/api/staff", Handler.api_set_role, needs=Permission.MANAGE_STAFF),
     Route("POST", r"/api/password", Handler.api_change_password, needs=SIGNED_IN),
     Route("POST", r"/api/staff/remove", Handler.api_remove_staff, needs=Permission.MANAGE_STAFF),
+    # The simulation checks its own setting first, so with it off these are 404 for everyone.
+    Route("GET", r"/api/sim", Handler.api_sim_status),
+    Route("POST", r"/api/sim/storm", Handler.api_sim_storm),
+    Route("POST", r"/api/sim/calm", Handler.api_sim_calm),
 ]
 
 
@@ -934,6 +964,9 @@ def main() -> None:
     Handler.public_url = public_url
     Handler.respond_tokens = respond_tokens
     Handler.geocoder = CensusGeocoder()
+    if os.environ.get("LIFELINE_STORM_SIM") == "1":
+        Handler.simulation = StormSimulation(lifeline)
+        log.warning("LIFELINE_STORM_SIM=1: admins can start a simulated storm (synthetic homes only)")
     Handler.client_ip_header = os.environ.get("LIFELINE_CLIENT_IP_HEADER") or None
     Handler.twilio_auth_token = None
     if os.environ.get("LIFELINE_NOTIFIER") == "twilio":

@@ -1034,3 +1034,10 @@ dialog.panel { width: min(46rem, 100vw); background: var(--color-paper); }
 .btn, .btn-primary, .input, .pill-select, .filter-field { border-radius: var(--radius-md); }
 .chip-state, .tag { border-radius: var(--radius-sm); }
 .action-card, .data-table, .kpi, .chart-card, .staff-add, .status-card, .card-911, .account-form { border-radius: var(--radius-lg); }
+
+/* Demo board only (LIFELINE_STORM_SIM=1): admins start and end a simulated storm. */
+.triage > .sim-panel { order: 0; }  /* under the headline, not with the setup notes at the bottom */
+.sim-form { display: flex; flex-wrap: wrap; align-items: end; gap: 0.75rem 1rem; margin-bottom: 0.75rem; }
+.sim-form .input-small { width: 6.5rem; }
+.sim-status { margin: 0 0 0.75rem; font-size: var(--text-sm); color: var(--color-ink-muted); }
+.sim-status:empty { display: none; }

@@ -24,6 +24,7 @@ from respond import RespondTokens
 from records import outage_from_record, outage_to_record, patient_from_form, patient_from_record, patient_to_record
 import service
 from service import DuplicateDevice, Lifeline
+from simulation import SimulationRefused, StormSimulation
 from staff import LoginThrottle, Sessions, StaffMember
 from storm import (Conditions, ForecastPeriod, Hazard, RiskLevel, StormWatch, WarningArea, WeatherReport, WeatherUnavailable,
                    alert_hazard, assess_forecast, nearby_outage_hazard)
@@ -1312,6 +1313,101 @@ class RoleEnforcement(unittest.TestCase):
         status, me = self.call("viewer@a.org", "GET", "/api/me")
         self.assertEqual((status, me["role"]), (200, "viewer"))
         self.assertEqual(me["permissions"], ["view_board", "view_history"])
+
+
+def synthetic_homes(count):
+    return [a_patient(device_id=f"sim-{n:02d}", name=f"Home {n} (synthetic)", share_token=f"share-{n:02d}" * 3)
+            for n in range(1, count + 1)]
+
+
+def a_lifeline(*patients):
+    return Lifeline(make_monitor(*patients), MemoryStore(*patients), SilentNotifier(), MemoryOutageStore())
+
+
+class StormSimulationRules(unittest.TestCase):
+    HEARTBEAT = 999  # a pause this long is a heartbeat; the fake pause never sleeps
+
+    def simulation(self, lifeline, heartbeats=2):
+        self.pauses, self.dark_at_pause = [], []
+
+        def pause(_cancel, seconds):
+            self.pauses.append(seconds)
+            self.dark_at_pause.append(sum(row["status"] == "outage" for row in lifeline.snapshot()))
+            return self.pauses.count(self.HEARTBEAT) > heartbeats  # stop after a few heartbeats
+        return StormSimulation(lifeline, heartbeat_seconds=self.HEARTBEAT, pause=pause)
+
+    def statuses(self, lifeline):
+        return [row["status"] for row in sorted(lifeline.snapshot(), key=lambda r: r["device_id"])]
+
+    def test_homes_go_dark_one_after_another_and_stay_dark_through_heartbeats(self):
+        lifeline = a_lifeline(*synthetic_homes(4))
+        simulation = self.simulation(lifeline)
+        simulation.start_storm(3, 4)
+        simulation.wait_until_stopped()
+        self.assertEqual(self.pauses, [4, 4, 999, 999, 999])
+        self.assertEqual(self.dark_at_pause, [1, 2, 3, 3, 3])  # one more home each pause, then steady
+        self.assertEqual(self.statuses(lifeline), ["outage", "outage", "outage", "ok"])
+        self.assertEqual(simulation.status(), {"homes": 4, "out": 3, "planned": 3, "running": False})
+
+    def test_calm_brings_every_home_back_and_a_new_storm_starts_from_now(self):
+        lifeline = a_lifeline(*synthetic_homes(3))
+        simulation = self.simulation(lifeline, heartbeats=0)
+        simulation.start_storm(2, 0)
+        simulation.wait_until_stopped()
+        first = {row["device_id"]: row["outage_started"] for row in lifeline.snapshot() if row["outage_started"]}
+        simulation.calm()
+        simulation.wait_until_stopped()
+        self.assertEqual(self.statuses(lifeline), ["ok", "ok", "ok"])
+        simulation.start_storm(1, 0)
+        simulation.wait_until_stopped()
+        self.assertGreaterEqual(lifeline.snapshot()[0]["outage_started"], first["sim-01"])
+        self.assertEqual(self.statuses(lifeline), ["outage", "ok", "ok"])
+
+    def test_refuses_a_board_with_any_real_home_and_bad_numbers(self):
+        real_board = a_lifeline(*synthetic_homes(2), a_patient(device_id="unit-77"))
+        with self.assertRaisesRegex(SimulationRefused, "not synthetic"):
+            self.simulation(real_board).start_storm(1, 0)
+        with self.assertRaises(SimulationRefused):
+            self.simulation(real_board).calm()
+        self.assertEqual(self.statuses(real_board), ["never_seen"] * 3)  # nothing was reported
+        board = a_lifeline(*synthetic_homes(2))
+        for homes, every in ((0, 4), (3, 4), ("2", 4), (True, 4), (1, -1), (1, 61)):
+            with self.subTest(homes=homes, every=every), self.assertRaises(SimulationRefused):
+                self.simulation(board).start_storm(homes, every)
+
+
+class SimulationRoutes(unittest.TestCase):
+    def setUp(self):
+        app.Handler.sessions = Sessions("k" * 40)
+        app.Handler.staff = StaffDirectory(MemoryStaffStore(), [StaffAccount("admin@a.org", Role.ADMIN), StaffAccount("nurse@a.org", Role.NURSE)])
+        self.lifeline = app.Handler.lifeline = a_lifeline(*synthetic_homes(3))
+        self.addCleanup(setattr, app.Handler, "simulation", None)
+        server = app.ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.base = f"http://127.0.0.1:{server.server_port}"
+
+    call = RoleEnforcement.call
+
+    def test_off_unless_the_setting_is_on(self):
+        app.Handler.simulation = None
+        for email in ("admin@a.org", "nurse@a.org", None):
+            self.assertEqual(self.call(email, "POST", "/api/sim/storm", {"homes": 1})[0], 404)
+            self.assertEqual(self.call(email, "GET", "/api/sim")[0], 404)
+
+    def test_admins_only_and_a_storm_puts_homes_out(self):
+        app.Handler.simulation = StormSimulation(self.lifeline, pause=lambda cancel, seconds: True)
+        self.assertEqual(self.call("nurse@a.org", "POST", "/api/sim/storm", {"homes": 2})[0], 403)
+        self.assertEqual(self.call(None, "GET", "/api/sim")[0], 401)
+        status, body = self.call("admin@a.org", "POST", "/api/sim/storm", {"homes": 2, "every_seconds": 0})
+        app.Handler.simulation.wait_until_stopped()
+        self.assertEqual(status, 200)
+        self.assertEqual(sum(row["status"] == "outage" for row in self.lifeline.snapshot()), 1)  # the pause cancels after the first
+        self.assertEqual(self.call("admin@a.org", "POST", "/api/sim/storm", {"homes": 9})[0], 409)
+        self.assertEqual(self.call("admin@a.org", "POST", "/api/sim/calm", {})[0], 200)
+        app.Handler.simulation.wait_until_stopped()
+        self.assertEqual({row["status"] for row in self.lifeline.snapshot()}, {"ok"})
 
 
 class LandingAndCompression(unittest.TestCase):

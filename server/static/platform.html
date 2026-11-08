@@ -47,6 +47,16 @@
       <div class="headline" id="headline"><h1>Loading…</h1></div>
       <p class="visually-hidden" id="announce" aria-live="polite"></p>
       <p class="visually-hidden" id="announce-alert" role="alert"></p>
+      <details class="attention sim-panel" id="sim-panel" hidden>
+        <summary>Simulation (synthetic homes)</summary>
+        <form class="sim-form" id="sim-form" novalidate>
+          <div class="field"><label for="sim-homes">Homes to lose power</label><input class="input input-small" id="sim-homes" name="homes" type="number" min="1" value="16" required></div>
+          <div class="field"><label for="sim-every">Seconds apart</label><input class="input input-small" id="sim-every" name="every" type="number" min="0" max="60" value="4" required></div>
+          <button class="btn btn-small" type="submit">Start storm</button>
+          <button class="btn btn-quiet btn-small" id="sim-calm" type="button">End storm: all power back</button>
+        </form>
+        <p class="sim-status" id="sim-status" role="status"></p>
+      </details>
       <div class="storm-banner" id="storm-banner" hidden></div>
       <div class="triage-tools" id="triage-tools" hidden></div>
       <div class="triage-tools" id="board-tools" hidden></div>

@@ -140,7 +140,8 @@ def storm_settings(public_url: str, admin_email: str) -> Path:
               "ESCALATE_AFTER_SECONDS": "120",
               "OFFLINE_AFTER_SECONDS": "604800",
               "SILENT_ALERT_AFTER_SECONDS": "604800",
-              "LIFELINE_EMPOWER": "on"}
+              "LIFELINE_EMPOWER": "on",
+              "LIFELINE_STORM_SIM": "1"}               # admins start and end the storm from the board
     target = DIST / "azure-storm-settings.json"
     write_private(target, json.dumps([{"name": k, "value": v, "slotSetting": False} for k, v in values.items()]))
     write_private(DIST / "storm-admin-password.txt", password + "\n")

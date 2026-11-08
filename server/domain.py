@@ -19,6 +19,7 @@ MAX_CONTACTS = 6
 MAX_BACKUP_MINUTES = 48 * 60
 MAX_TEXT_LENGTH = 120
 AGENCY_ROLE_WORDS = ("agency", "nurse", "home health")  # roles are free text; these mark care staff
+SYNTHETIC_MARKER = "(synthetic)"  # ends the name of every invented demo patient
 
 
 class InvalidPatient(ValueError):
@@ -117,6 +118,10 @@ class Patient:
             raise InvalidPatient(f"Add between 1 and {MAX_CONTACTS} contacts")
         if self.running_amps_min is not None and not MIN_RUNNING_AMPS <= self.running_amps_min <= MAX_RUNNING_AMPS:
             raise InvalidPatient(f"Running current must be between {MIN_RUNNING_AMPS} and {MAX_RUNNING_AMPS:g} amps")
+
+    def is_synthetic(self) -> bool:
+        """Invented for demos: the name carries the honesty marker shown on every page."""
+        return self.name.rstrip().endswith(SYNTHETIC_MARKER)
 
     def care_gaps(self) -> list[str]:
         """What in this patient's setup would slow help down in an outage, in staff words."""
