@@ -1,0 +1,28 @@
+# Lifeline server on the Azure VM. Installed by deploy/vm/setup.sh; runbook: docs/ops/deploy.md.
+# Exactly one of these may run against the Supabase project (two would send every alert twice).
+[Unit]
+Description=Lifeline power-loss alerts
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+User=lifeline
+Group=lifeline
+WorkingDirectory=/opt/lifeline/server
+# app.py reads /opt/lifeline/server/.env (mode 600, owned by lifeline) and listens on port 8080;
+# the NSG opens 22 (owner's IP), 80 and 443 only, and Caddy proxies 443 to it.
+ExecStart=/usr/bin/python3 app.py
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=30
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadWritePaths=/opt/lifeline/server
+
+[Install]
+WantedBy=multi-user.target

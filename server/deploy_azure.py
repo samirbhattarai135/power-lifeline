@@ -4,6 +4,9 @@
       -> dist/lifeline-server.zip: an allowlist of server code and static files only, so
          server/.env, local rosters and incident files can never be uploaded.
 
+  python3 server/deploy_azure.py vm-env --public-url https://<host> [--demo]
+      -> dist/lifeline.env (mode 600): the same for the VM (Caddy in front), as a server/.env file.
+
   python3 server/deploy_azure.py settings --public-url https://<host> [--demo]
       -> dist/azure-settings.json (mode 600): App Service settings, secrets read from
          server/.env without printing them. Apply with
@@ -38,7 +41,11 @@ SETTINGS = {
     "OFFLINE_AFTER_SECONDS": "90",
     "SILENT_ALERT_AFTER_SECONDS": "300",
 }
-STAGE_DEMO = {"ESCALATE_AFTER_SECONDS": "12", "LIFELINE_STORM_WATCH": "demo"}  # docs/pitch/demo-script.md
+# docs/pitch/demo-script.md. Assume-power lets the one real unit run among synthetic homes that never report.
+STAGE_DEMO = {"ESCALATE_AFTER_SECONDS": "12", "LIFELINE_STORM_WATCH": "demo", "LIFELINE_DEMO_ASSUME_POWER": "1"}
+# The VM: Caddy on the same machine proxies 443 to 8080 and overwrites X-Real-IP with the caller's address.
+VM_SETTINGS = {"PORT": "8080", "LIFELINE_CLIENT_IP_HEADER": "X-Real-IP"}
+APP_SERVICE_ONLY = ("WEBSITES_PORT", "SCM_DO_BUILD_DURING_DEPLOYMENT")
 
 # Copied from server/.env when present. LIFELINE_PUBLIC_URL is not: in .env it is the laptop's address.
 FROM_DOTENV = ("SUPABASE_URL", "SUPABASE_SECRET_KEY", "NTFY_TOPIC", "NTFY_SERVER", "NTFY_TOKEN",
@@ -79,7 +86,7 @@ def read_dotenv(path: Path) -> dict[str, str]:
     return values
 
 
-def settings(public_url: str, demo: bool) -> Path:
+def hosted_values(public_url: str, demo: bool) -> dict[str, str]:
     if not public_url.startswith("https://") or public_url.rstrip("/") != public_url:
         raise SystemExit("--public-url must be https://<host> with no trailing slash")
     dotenv = read_dotenv(SERVER / ".env")
@@ -87,15 +94,39 @@ def settings(public_url: str, demo: bool) -> Path:
     if missing:
         raise SystemExit(f"server/.env is missing {', '.join(missing)} (generate secrets with "
                          "python3 -c \"import secrets; print(secrets.token_urlsafe(32))\")")
-    values = {**SETTINGS, **(STAGE_DEMO if demo else {}), "LIFELINE_PUBLIC_URL": public_url}
+    values = dict(SETTINGS)
     values.update({key: dotenv[key] for key in FROM_DOTENV if dotenv.get(key)})
+    values.update(STAGE_DEMO if demo else {})
+    values["LIFELINE_PUBLIC_URL"] = public_url
+    return values
+
+
+def write_private(target: Path, text: str) -> None:
     DIST.mkdir(exist_ok=True)
-    target = DIST / "azure-settings.json"
     fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as out:
-        json.dump([{"name": k, "value": v, "slotSetting": False} for k, v in values.items()], out)
+        out.write(text)
+
+
+def settings(public_url: str, demo: bool) -> Path:
+    values = hosted_values(public_url, demo)
+    target = DIST / "azure-settings.json"
+    write_private(target, json.dumps([{"name": k, "value": v, "slotSetting": False} for k, v in values.items()]))
     print(f"{target}: {len(values)} settings: {', '.join(sorted(values))}")
     print("values not shown. Apply with -o none, then delete the file.")
+    return target
+
+
+def vm_env(public_url: str, demo: bool) -> Path:
+    """The server/.env for the VM, in the format app.load_dotenv reads."""
+    values = {k: v for k, v in hosted_values(public_url, demo).items() if k not in APP_SERVICE_ONLY}
+    values.update(VM_SETTINGS)
+    if any("\n" in v for v in values.values()):
+        raise SystemExit("a value in server/.env spans lines; fix it there first")
+    target = DIST / "lifeline.env"
+    write_private(target, "".join(f"{k}={v}\n" for k, v in values.items()))
+    print(f"{target}: {len(values)} settings: {', '.join(sorted(values))}")
+    print("values not shown. Copy it to the VM, then delete it here.")
     return target
 
 
@@ -106,11 +137,16 @@ def main() -> None:
     settings_parser = commands.add_parser("settings", help="write dist/azure-settings.json")
     settings_parser.add_argument("--public-url", required=True, help="https://<defaultHostName>, no trailing slash")
     settings_parser.add_argument("--demo", action="store_true", help="stage settings: 12 s escalation, Storm Watch demo")
+    vm_parser = commands.add_parser("vm-env", help="write dist/lifeline.env for the VM")
+    vm_parser.add_argument("--public-url", required=True, help="https://<VM DNS name>, no trailing slash")
+    vm_parser.add_argument("--demo", action="store_true", help="stage settings: 12 s escalation, Storm Watch demo")
     args = parser.parse_args()
     if args.command == "package":
         package()
-    else:
+    elif args.command == "settings":
         settings(args.public_url, args.demo)
+    else:
+        vm_env(args.public_url, args.demo)
 
 
 if __name__ == "__main__":
