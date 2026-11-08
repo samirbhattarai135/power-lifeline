@@ -1,14 +1,12 @@
 import { createBoardMap } from "./map.js";
 import { barChart, lineChart } from "./charts.js";
-import { TRIAGE_AT, TRIAGE_FIELDS, actionCard, needsAction, renderKeyed, situationChips, startClock, triageOrder, triageRow, triageTools } from "./actions.js";
+import { TRIAGE_AT, TRIAGE_FIELDS, actionCard, countGrid, countsOf, icon, needsAction, renderKeyed, situationChips, startClock, townOf, triageOrder, triageRow, triageTools } from "./actions.js";
 import { applyFilters, filterBar, isFiltering, mountFilterBar, resetState } from "./filters.js";
 import { createAlarm } from "./alarm.js";
-import { escalationNotes } from "./escalation.js";
-import { ApiError, api, el, clockTime, dateTime, durationText, hazardText, listNames, minutesSince, plural, secondsAgo, stateOf, uptimeText, withButton } from "./common.js";
+import { ApiError, api, el, chip, clockTime, dateTime, durationText, glyph, hazardText, homeState, STATE_WORD, listNames, minutesSince, nameNode, nameParts, plural, secondsAgo, stateOf, uptimeText, withButton } from "./common.js";
 
 const BOARD_REFRESH_MS = 2000;
 const MAP_CENTER = [31.3, -89.31]; // Pine Belt, Mississippi
-const STATE_LABEL = { out: "Power out", acked: "Power out, responding", on: "Power on", quiet: "No signal" };
 const ROLES = ["Family", "Caregiver", "Home health nurse", "Agency on-call", "County emergency management", "Other"];
 
 // ---- session -----------------------------------------------------------------
@@ -23,8 +21,14 @@ async function guarded(promise) {
 }
 
 document.getElementById("signout").addEventListener("click", async () => {
-  await api("POST", "/api/logout", {});
+  await api("POST", "/api/logout", {}).catch(() => {});  // offline: still leave the board
   location.assign("/login");
+});
+const accountToggle = document.getElementById("account-toggle");
+accountToggle.addEventListener("click", () => {
+  const open = accountToggle.getAttribute("aria-expanded") !== "true";
+  accountToggle.setAttribute("aria-expanded", String(open));
+  document.getElementById("account-menu").classList.toggle("is-open", open);
 });
 // The server enforces every permission; the page only hides what this role can't use.
 const me = await guarded(api("GET", "/api/me"));
@@ -66,10 +70,9 @@ window.addEventListener("hashchange", showView);
 // The board's words for a unit: which emergency, if any, and whether someone has it.
 const EMERGENCY_LABEL = { power: "Power out", machine: "Machine stopped", help: "Help requested" };
 function labelFor(unit) {
-  const state = stateOf(unit);
-  if (unit.status !== "outage") return STATE_LABEL[state];
-  const what = EMERGENCY_LABEL[unit.emergency] ?? "Power out";
-  return unit.acknowledged_by ? `${what}, responding` : what;
+  const state = homeState(unit);
+  if (state === "out" && unit.emergency && unit.emergency !== "power") return EMERGENCY_LABEL[unit.emergency];
+  return unit.status === "never_seen" ? "Not set up" : STATE_WORD[state];
 }
 
 // ---- the list beside the map ------------------------------------------------------------
@@ -90,21 +93,20 @@ function renderBoardList(units) {
   const ranks = new Map(active.map((u, index) => [u.device_id, index + 1]));
   const filtering = isFiltering(TRIAGE_FIELDS, filters);
   const shown = applyFilters(active, TRIAGE_FIELDS, filters);
-  const ordered = triage ? [...shown, ...(filtering ? [] : units.filter((u) => !needsAction(u)))] : units;
+  const ordered = triage ? [...shown, ...(filtering ? [] : units.filter((u) => !needsAction(u)))] : boardFilters.mount(units);
   const tools = document.getElementById("triage-tools");
   tools.hidden = !triage;
+  document.getElementById("board-tools").hidden = triage;
   // Rebuilt only when what it shows changes: a heartbeat must not swallow a tap or reset the two-tap send.
-  const toolsKey = JSON.stringify([active.map((u) => [u.address, u.equipment, u.status, u.critical, u.unreached, u.acknowledged_by]), filters, sendNote]);
+  const toolsKey = JSON.stringify([active.map((u) => [u.address, u.equipment, u.status, u.critical, u.unreached, u.acknowledged_by]), filters]);
   if (triage && tools.dataset.key !== toolsKey) {
     tools.dataset.key = toolsKey;
-    mountFilterBar(tools, triageTools(active, { state: filters, onChange: setFilter, onReset: resetFilters, canSend: can("respond"),
-      onSendCounty: sendCountyButton, sendNote }));
+    mountFilterBar(tools, triageTools(active, { state: filters, onChange: setFilter, onReset: resetFilters }));
   }
   renderKeyed(container,
-    ordered.map((u) => (triage && ranks.has(u.device_id) ? { ...u, rank: ranks.get(u.device_id), open: openRows.has(u.device_id) } : u)),
+    ordered.map((u) => ({ ...u, open: openRows.has(u.device_id), ...(triage && ranks.has(u.device_id) ? { rank: ranks.get(u.device_id) } : {}) })),
     (u) => (u.rank ? triageRow(u, u.rank, { respondButton, canRespond: can("respond"), open: u.open, onToggle: toggleRow, onLocate: locate })
-      : needsAction(u) ? actionCard(u, { respondButton, onLocate: locate }) : unitRow(u)));
-  boardMap.showRanks(triage ? active : []);
+      : needsAction(u) ? actionCard(u, { respondButton, canRespond: can("respond"), onLocate: locate }) : unitRow(u)));
 
   if (triage && !wasTriage) boardMap.fitTo(active);
   wasTriage = triage;
@@ -113,25 +115,44 @@ function renderBoardList(units) {
 function setFilter(key, value) {
   filters[key] = value;
   renderBoardList(lastUnits);
-  const shown = applyFilters(triageOrder(lastUnits), TRIAGE_FIELDS, filters);
-  boardMap.fitTo(shown.length ? shown : triageOrder(lastUnits));
+  fitShown();
 }
 
 function resetFilters() {
   resetState(TRIAGE_FIELDS, filters);
   renderBoardList(lastUnits);
-  boardMap.fitTo(triageOrder(lastUnits));
+  fitShown();
 }
 
-// Two taps, because it sends messages: the first arms it, the second sends.
+// The active homes the filters leave on the list.
+const shownActive = () => applyFilters(triageOrder(lastUnits), TRIAGE_FIELDS, filters);
+
+// Back to the big picture: every shown active home.
+function fitShown() {
+  const shown = shownActive();
+  const active = triageOrder(lastUnits);
+  boardMap.fitTo(shown.length ? shown : active.length ? active : lastUnits);
+}
+
+// Two taps, because it sends messages: the first arms it, the second sends. The arming lives here,
+// not on the button, because a storm rebuilds the button every refresh as the count changes.
+const COUNTY_ARM_MS = 8000;
+let countyArmedUntil = 0;
+
 function sendCountyButton(count) {
-  const button = el("button", { class: "btn btn-county", type: "button" }, `Send ${count} no-answer home${count === 1 ? "" : "s"} to county`);
+  const armed = () => Date.now() < countyArmedUntil;
+  const button = el("button", { class: "btn btn-county", type: "button" },
+    armed() ? "Tap again to send the welfare-check list" : `Send ${count} no-answer home${count === 1 ? "" : "s"} to county`);
+  if (armed()) button.dataset.confirm = "yes";
   button.addEventListener("click", async () => {
-    if (button.dataset.confirm !== "yes") {
+    if (!armed()) {
+      countyArmedUntil = Date.now() + COUNTY_ARM_MS;
       button.dataset.confirm = "yes";
       button.textContent = "Tap again to send the welfare-check list";
+      setTimeout(() => { if (!armed()) { headlineKey = ""; headline(lastUnits); } }, COUNTY_ARM_MS + 50);  // disarm on screen too
       return;
     }
+    countyArmedUntil = 0;
     try {
       const result = await withButton(button, () => guarded(api("POST", "/api/county/notify", {})));
       sendNote = (result.sent_to.length ? `Welfare-check list sent to ${listNames(result.sent_to)} at ${clockTime(new Date().toISOString())}.` : "")
@@ -139,15 +160,20 @@ function sendCountyButton(count) {
     } catch (error) {
       sendNote = error.message;
     }
-    renderBoardList(lastUnits);
+    headline(lastUnits);
   });
   return button;
 }
 
 function toggleRow(unit) {
   if (openRows.has(unit.device_id)) openRows.delete(unit.device_id);
-  else { openRows.add(unit.device_id); locate(unit); }
+  else openRows.add(unit.device_id);
   renderBoardList(lastUnits);
+  // The map follows the most recently opened home still on the list, else shows them all.
+  const listed = new Set([...document.querySelectorAll("#units > [data-key]")].map((node) => node.dataset.key));
+  const openUnits = [...openRows].filter((id) => listed.has(id)).map((id) => lastUnits.find((u) => u.device_id === id)).filter(Boolean);
+  if (openUnits.length) locate(openUnits.at(-1));
+  else fitShown();
 }
 
 // A pin on the map was tapped: open that home's line and bring it into view.
@@ -165,31 +191,91 @@ function jumpTo(unit) {
   boardMap.focus(unit);
 }
 
+// Freshness: the band says when it last heard from the server, and turns grey when it can't.
+const liveNode = el("p", { class: "live" }, el("span", { class: "live-dot", "aria-hidden": "true" }), el("span", { class: "live-text" }, "Connecting"));
+let lastGood = null;
+
+function markLive(ok) {
+  if (ok) lastGood = new Date();
+  const since = lastGood ? clockTime(lastGood.toISOString()) : null;
+  const text = ok ? `Live · ${since}` : since ? `Not updating since ${since}` : "Not updating";
+  const label = liveNode.querySelector(".live-text");
+  if (label.textContent !== text) label.textContent = text;
+  liveNode.classList.toggle("is-stale", !ok);
+  for (const badge of document.querySelectorAll(".page-live")) {
+    badge.classList.toggle("is-stale", !ok);
+    const pageLabel = badge.querySelector(".live-text");
+    if (pageLabel.textContent !== text) pageLabel.textContent = text;
+  }
+  document.getElementById("headline").classList.toggle("is-stale", !ok);
+  if (!ok) announce(`${text}. The board may be out of date.`);
+}
+
+let headlineKey = "";
+
+// Rebuilt only when what it shows changes, so a refresh never swallows a tap on the county button.
 function headline(units) {
   const out = units.filter((u) => u.status === "outage");
   const waiting = out.filter((u) => !u.acknowledged_by);
   const node = document.getElementById("headline");
   node.classList.toggle("is-alarm", waiting.length > 0);
+  node.classList.toggle("is-handled", out.length > 0 && !waiting.length);
+  document.body.classList.toggle("has-outage", out.length > 0);
+  // Arming is not in the key: the armed button already shows it, and a rebuild between two taps could eat the second.
+  const key = JSON.stringify([units.length, out.map((u) => u.emergency ?? "power"), countsOf(units).map((c) => c.matches.map((u) => u.device_id)), sendNote]);
+  if (key === headlineKey) return;
+  headlineKey = key;
+  const title = (text) => el("div", { class: "headline-title" }, el("h1", {}, text), liveNode);
   if (!units.length) {
-    node.replaceChildren(el("h1", {}, "No patients yet"), el("p", {}, "Add a patient to start monitoring their power."));
+    node.replaceChildren(title("No patients yet"), el("p", { class: "headline-sub" }, "Add a patient to start monitoring their power."));
   } else if (!out.length) {
-    node.replaceChildren(el("h1", {}, `All ${plural(units.length, "home")} have power`),
-      situationChips(units, jumpTo) ?? el("p", {}, "We'll alert the call list the moment that changes."));
+    node.replaceChildren(...[title(`All ${plural(units.length, "home")} have power`),
+      el("p", { class: "headline-sub" }, "We'll alert the call list the moment that changes."), situationChips(units, jumpTo)].filter(Boolean));
   } else {
     const allPower = out.every((u) => (u.emergency ?? "power") === "power");
-    node.replaceChildren(el("h1", {}, allPower ? `${plural(out.length, "home")} without power` : `${plural(out.length, "home")} need help now`),
-      situationChips(units, jumpTo));
+    node.replaceChildren(...[title(allPower ? `${plural(out.length, "home")} without power` : `${plural(out.length, "home")} need help now`),
+      countGrid(units, jumpTo), countySend(units)].filter(Boolean));
   }
 }
 
-// One line per hazard, naming the patients in its path; high risk first (the server sorts each unit's list).
+function countySend(units) {
+  const unreached = units.filter((u) => u.status === "outage" && u.unreached && !u.acknowledged_by).length;
+  if (!can("respond") || (!unreached && !sendNote)) return null;
+  return el("div", { class: "county-send" },
+    unreached ? sendCountyButton(unreached) : null,
+    unreached ? el("p", { class: "county-hint" }, "Tap again to confirm · read-only list, no phone numbers") : null,
+    sendNote ? el("p", { class: "send-note", role: "status" }, sendNote) : null);
+}
+
+/** What screen readers hear when the counts change: the title and each non-zero count. */
+function countsSentence(units) {
+  const counts = countsOf(units).filter((c) => c.matches.length).map((c) => `${c.matches.length} ${c.label}`);
+  return [document.querySelector("#headline h1")?.textContent, counts.join(", ")].filter(Boolean).join(". ");
+}
+
+// A row newly crossing under 15 minutes gets one flash and one assertive announcement, then holds still.
+let knownCritical = null;
+function flagNewlyRed(units) {
+  const critical = units.filter((u) => homeState(u) === "critical");
+  if (knownCritical) {
+    const fresh = critical.filter((u) => !knownCritical.has(u.device_id));
+    for (const unit of fresh) document.querySelector(`#units [data-key="${CSS.escape(unit.device_id)}"]`)?.classList.add("is-new-red");
+    if (fresh.length) {
+      document.getElementById("announce-alert").textContent =
+        `Under 15 minutes of backup: ${listNames(fresh.map((u) => nameParts(u.name)[0])).replace(/\.$/, "")}. Call 911 if nobody is there.`;
+    }
+  }
+  knownCritical = new Set(critical.map((u) => u.device_id));
+}
+
+// One line per hazard, naming a few of the patients in its path; high risk first (the server sorts each unit's list).
 function stormBanner(units) {
   const byHazard = new Map();
   for (const unit of units) {
     for (const hazard of unit.hazards) {
       const key = `${hazard.level}|${hazardText(hazard)}`;
       if (!byHazard.has(key)) byHazard.set(key, { hazard, names: [] });
-      byHazard.get(key).names.push(unit.name);
+      byHazard.get(key).names.push(nameParts(unit.name)[0]);
     }
   }
   const node = document.getElementById("storm-banner");
@@ -198,10 +284,10 @@ function stormBanner(units) {
   const lines = [...byHazard.values()].sort((a, b) => (a.hazard.level === "high" ? -1 : 1) - (b.hazard.level === "high" ? -1 : 1));
   node.replaceChildren(
     el("h2", {}, "Storm watch"),
-    el("ul", {}, lines.map(({ hazard, names }) => el("li", { class: `is-${hazard.level}` },
-      el("strong", {}, hazardText(hazard)), el("span", { class: "visually-hidden" }, ": "), listNames(names)))),
+    ...lines.map(({ hazard, names }) => el("p", { class: `storm-line is-${hazard.level}` }, el("strong", {}, hazardText(hazard)),
+      `: ${plural(names.length, "home")} in the path`, names.length > 3 ? `, including ${names.slice(0, 3).join(", ")}…` : `: ${listNames(names)}.`)),
     callFirst(units) ?? "",
-    el("p", { class: "muted" }, "High-risk warnings have been sent to each patient's first contact. Check backups now, most critical first."),
+    el("p", { class: "storm-sent" }, "High-risk warnings have been sent to each patient's first contact. Check backups now, most critical first."),
   );
 }
 
@@ -214,9 +300,11 @@ function callFirst(units) {
     .sort((a, b) => a.acuity - b.acuity || a.backup_minutes - b.backup_minutes);
   if (!urgent.length) return null;
   // Care staff get a call link per patient (first person on the call list), so storm prep is one tap each.
-  return el("div", { class: "call-first" }, el("strong", {}, "Call first"),
-    el("ol", {}, urgent.map((u) => el("li", {},
-      `${u.name}, ${durationText(u.backup_minutes)} of backup`,
+  return el("div", { class: "call-first" },
+    el("p", { class: "call-first-head" }, el("strong", {}, "Call first"), el("span", { class: "muted" }, "most critical first, then shortest backup")),
+    el("ol", {}, urgent.map((u, index) => el("li", {},
+      el("span", { class: "call-first-index" }, String(index + 1)),
+      el("div", { class: "call-first-who" }, el("p", {}, nameNode(u.name)), el("p", { class: "muted" }, `${durationText(u.backup_minutes)} of backup`)),
       u.contacts?.length ? el("a", { class: "btn btn-call btn-small", href: `tel:${u.contacts[0].phone}` }, `Call ${u.contacts[0].name}`) : null))));
 }
 
@@ -245,52 +333,28 @@ function announce(text) {
   if (region.textContent !== text) region.textContent = text;
 }
 
+// A home that needs nobody right now: one quiet line, the state word on the right.
+// A quiet home: tapping it shows it on the map and, for staff who may see call lists, opens its
+// details right under the row (a side panel would cover the map it just moved).
 function unitRow(unit) {
-  const state = stateOf(unit);
-  const lines = [
-    el("div", { class: "unit-head" },
-      el("span", { class: "state-dot", "aria-hidden": "true" }),
-      el("h2", {}, unit.name),
-      el("span", { class: "unit-state" }, labelFor(unit))),
-    el("p", { class: "muted" }, `${unit.equipment}, acuity ${unit.acuity}. ${unit.address}`),
-  ];
-  if (unit.status === "outage" && unit.emergency === "help") {
-    lines.push(el("p", {}, `Help button pressed at ${clockTime(unit.outage_started)}. ` +
-      (unit.contacts_alerted.length ? `Alerted ${listNames(unit.contacts_alerted)}.` : "")));
-    if (unit.acknowledged_by) lines.push(el("p", {}, `Responding: ${unit.acknowledged_by}`));
-    else lines.push(respondButton(unit));
-  } else if (unit.status === "outage") {
-    lines.push(
-      backupLine(unit.backup_minutes_left),
-      el("p", {}, `Out since ${clockTime(unit.outage_started)}${minutesSince(unit.outage_started) ? ` (${plural(minutesSince(unit.outage_started), "minute")})` : ", just now"}. ` +
-        (unit.contacts_alerted.length ? `Alerted ${listNames(unit.contacts_alerted)}.` : "")),
-    );
-    if (unit.acknowledged_by) lines.push(el("p", {}, `Responding: ${unit.acknowledged_by}`));
-    else lines.push(respondButton(unit));
-  } else if (unit.status === "offline") {
-    lines.push(el("p", {}, `Unit silent for ${durationText(minutesSince(unit.last_seen))}. Its Wi-Fi or battery may be down; check on the patient.` +
-      (unit.silent_alert_sent ? " Care staff have been alerted." : "")));
-  } else if (unit.status === "never_seen") {
-    lines.push(el("p", { class: "muted" }, "Unit has not connected yet."));
-  } else {
-    lines.push(el("p", { class: "muted" }, `Last report ${secondsAgo(unit.last_seen)}${unit.battery_percent == null ? "" : `, unit battery ${unit.battery_percent}%`}.`));
-  }
-  lines.push(...escalationNotes(unit));
-  for (const hazard of unit.hazards) {
-    lines.push(el("p", { class: "unit-hazard" }, el("span", { class: "tag tag-storm" }, "Storm watch"), ` ${hazardText(hazard)}`));
-  }
-  return el("article", { class: `unit is-${state}` }, lines);
-}
-
-function backupLine(minutesLeft) {
-  if (minutesLeft === 0) return el("p", { class: "unit-backup" }, el("strong", {}, "0"), "Backup has probably run out. Get someone there now.");
-  const runsOut = clockTime(new Date(Date.now() + minutesLeft * 60000).toISOString());
-  return el("p", { class: "unit-backup" }, el("strong", {}, String(minutesLeft)), `minutes of backup left, runs out around ${runsOut}`);
+  const state = homeState(unit);
+  const report = unit.status === "never_seen" ? "unit has not connected yet"
+    : `last report ${secondsAgo(unit.last_seen)}${unit.battery_percent == null ? "" : `, unit battery ${unit.battery_percent}%`}`;
+  const hasDetails = can("view_patients") && Boolean(unit.contacts);
+  const select = el("button", { class: "home-select", type: "button", "aria-expanded": hasDetails ? String(Boolean(unit.open)) : null,
+    onclick: () => (hasDetails ? toggleRow(unit) : locate(unit)) },
+    el("span", { class: "home-main" },
+      el("span", { class: "home-name" }, nameNode(unit.name), unit.hazards.length ? el("span", { class: "tag tag-storm" }, "In storm path") : null),
+      el("span", { class: "home-meta" }, `${townOf(unit)} · ${unit.equipment} · ${report}`)),
+    el("span", { class: "home-state" }, glyph(state), unit.status === "never_seen" ? "Not set up" : "Power on"));
+  return el("article", { class: `unit home-row is-${state}${unit.open ? " is-open" : ""}` },
+    el("h2", { class: "home-heading" }, select),
+    unit.open && hasDetails ? el("div", { class: "home-details" }, ...patientDetails(unit)) : null);
 }
 
 function respondButton(unit) {
   if (!can("respond")) return el("p", { class: "muted" }, "Waiting for someone on the call list to respond.");
-  const button = el("button", { class: "btn btn-respond", type: "button" }, "I'm responding");
+  const button = el("button", { class: "btn btn-respond", type: "button" }, icon("hand"), "I'm responding");
   button.addEventListener("click", () =>
     withButton(button, () => guarded(api("POST", `/api/ack/${encodeURIComponent(unit.device_id)}`, {}))).then(refreshBoard));
   return button;
@@ -314,6 +378,7 @@ let lastUnits = [];
 async function refreshBoard() {
   try {
     const { units } = await guarded(api("GET", "/api/status"));
+    markLive(true);
     const snapshot = JSON.stringify(units);
     // Rebuilding unchanged rows every poll would swallow clicks on "We're responding".
     if (snapshot === lastBoard) return;
@@ -321,18 +386,19 @@ async function refreshBoard() {
     lastUnits = units;
     alarm.notice(units);
     if (currentView() === "units") renderUnits();
-    if (currentView() === "patients" && roster.length && roster.map((p) => liveState(p.device_id)).join() !== rosterStatusKey) renderRoster();
+    if (currentView() === "patients" && roster.length && roster.map((p) => displayState(liveUnit(p.device_id))).join() !== rosterStatusKey) renderRoster();
     headline(units);
     stormBanner(units);
     attentionPanel(units);
-    announce(document.querySelector("#headline h1").textContent);
     renderBoardList(units);
+    flagNewlyRed(units);
+    announce(countsSentence(units));
     boardMap.showUnits(units);
   } catch (error) {
     lastBoard = "";  // force a full redraw once the server answers again
-    if (!(error instanceof ApiError && error.status === 401)) {
-      document.getElementById("headline").replaceChildren(el("h1", {}, "Can't reach the server"), el("p", {}, "Retrying every few seconds."));
-    }
+    // Access removed or role changed mid-shift: the server sends this person to their right page.
+    if (error instanceof ApiError && error.status === 403) location.assign("/");
+    else if (!(error instanceof ApiError && error.status === 401)) markLive(false);
   }
 }
 
@@ -342,11 +408,21 @@ const townFromAddress = (address = "") => address.split(",").slice(-2, -1)[0]?.t
 const liveUnit = (deviceId) => lastUnits.find((u) => u.device_id === deviceId);
 const LIVE_STATUS = { out: "Power out", acked: "Someone responding", quiet: "No signal", on: "Power on" };
 const STATE_ORDER = ["out", "acked", "quiet", "on"];
-const liveState = (deviceId) => { const unit = liveUnit(deviceId); return unit ? stateOf(unit) : "quiet"; };
-const byUrgency = (stateOfItem) => (a, b) => STATE_ORDER.indexOf(stateOfItem(a)) - STATE_ORDER.indexOf(stateOfItem(b));
 
-function statusCell(state) {
-  return el("span", { class: `live-status is-${state}` }, el("span", { class: "state-dot", "aria-hidden": "true" }), LIVE_STATUS[state]);
+// The list pages speak the board's words: one shape and one word per state, plus "Not set up".
+const DISPLAY_WORD = { ...STATE_WORD, unset: "Not set up" };
+const displayState = (unit) => (!unit || unit.status === "never_seen" ? "unset" : homeState(unit));
+const URGENT_FIRST = ["critical", "unreached", "out", "responding", "silent", "unset", "on"];
+const SILENT_FIRST = ["silent", "unset", "critical", "unreached", "out", "responding", "on"];  // unit health: dead units lead
+const rankIn = (order) => (state) => order.indexOf(state);
+
+function statusCell(unit) {
+  const state = displayState(unit);
+  return chip(state === "unset" ? "silent" : state, DISPLAY_WORD[state]);
+}
+
+function acuityBadge(acuity) {
+  return el("span", { class: `acuity acuity-${acuity}`, title: acuity === 1 ? "Most critical" : acuity === 3 ? "Least critical" : null }, String(acuity));
 }
 
 /** Wire a page's filter bar: every change re-renders that page. */
@@ -368,6 +444,16 @@ function listFilters(fields, state, render, { idPrefix, noun, searchText }) {
     },
   };
 }
+
+// A quiet night: every home, filterable by the same questions the rest of Lifeline asks.
+const BOARD_FIELDS = [
+  { key: "status", label: "Status", value: stateOf, names: LIVE_STATUS, order: STATE_ORDER },
+  { key: "town", label: "Town", value: townOf },
+  { key: "equipment", label: "Equipment", value: (u) => u.equipment },
+];
+const boardState = { status: null, town: null, equipment: null, search: "" };
+const boardFilters = listFilters(BOARD_FIELDS, boardState, () => renderBoardList(lastUnits), {
+  idPrefix: "board", noun: "homes", searchText: (u) => `${u.name} ${u.address} ${u.device_id}` });
 
 const noMatch = (noun) => el("div", { class: "empty" }, el("h2", {}, `No ${noun} match these filters`),
   el("p", { class: "muted" }, "Remove a filter above, or reset them."));
@@ -396,7 +482,7 @@ async function loadRoster() {
 }
 
 const ROSTER_FIELDS = [
-  { key: "status", label: "Status", value: (p) => liveState(p.device_id), names: LIVE_STATUS, order: STATE_ORDER },
+  { key: "status", label: "Status", value: (p) => displayState(liveUnit(p.device_id)), names: DISPLAY_WORD, order: URGENT_FIRST },
   { key: "town", label: "Town", value: (p) => townFromAddress(p.address) },
   { key: "equipment", label: "Equipment", value: (p) => p.equipment },
   { key: "acuity", label: "Acuity", value: (p) => String(p.acuity), names: { 1: "1, most critical", 2: "2", 3: "3, least critical" }, order: ["1", "2", "3"] },
@@ -408,23 +494,25 @@ let rosterStatusKey = "";
 
 function renderRoster() {
   if (!roster.length) return;
-  rosterStatusKey = roster.map((p) => liveState(p.device_id)).join();
+  rosterStatusKey = roster.map((p) => displayState(liveUnit(p.device_id))).join();
   const body = document.getElementById("roster-body");
-  const shown = rosterFilters.mount(roster)
-    .sort((a, b) => byUrgency((p) => liveState(p.device_id))(a, b) || a.acuity - b.acuity || a.name.localeCompare(b.name));
+  const urgency = (p) => rankIn(URGENT_FIRST)(displayState(liveUnit(p.device_id)));
+  const shown = rosterFilters.mount(roster).sort((a, b) => urgency(a) - urgency(b) || a.acuity - b.acuity || a.name.localeCompare(b.name));
   if (!shown.length) { body.replaceChildren(noMatch("patients")); return; }
-  body.replaceChildren(el("table", {},
-    el("thead", {}, el("tr", {}, ["Status", "Patient", "Equipment", "Acuity", "Call list", "Unit", ""].map((h) => el("th", { scope: "col" }, h)))),
+  const editing = can("manage_patients");
+  body.replaceChildren(el("table", { class: "data-table stack-table" },
+    el("thead", {}, el("tr", {}, ["Status", "Patient", "Equipment", "Acuity", "Call list", "Unit"].map((h) => el("th", { scope: "col" }, h)),
+      el("th", { scope: "col" }, el("span", { class: "visually-hidden" }, "Actions")))),
     el("tbody", {}, shown.map((p) => el("tr", {},
-      el("td", {}, statusCell(liveState(p.device_id))),
-      el("td", {}, el("strong", {}, p.name), el("div", { class: "muted" }, p.address)),
-      el("td", { class: "col-hide-mobile" }, p.equipment),
-      el("td", { class: "col-hide-mobile" }, el("span", { class: `acuity acuity-${p.acuity}` }, String(p.acuity))),
-      el("td", { class: "col-hide-mobile" }, p.contacts.map((c) => c.name).join(", ")),
-      el("td", { class: "col-hide-mobile code" }, p.device_id),
-      el("td", {}, can("manage_patients")
-        ? el("button", { class: "btn btn-quiet btn-small", type: "button", onclick: () => openForm(p) }, "Edit")
-        : el("button", { class: "btn btn-quiet btn-small", type: "button", onclick: () => openDetails(p) }, "Details")),
+      el("td", { "data-label": "Status" }, statusCell(liveUnit(p.device_id))),
+      el("td", { "data-label": "Patient" }, el("div", { class: "cell-name" }, nameNode(p.name)), el("div", { class: "muted" }, p.address)),
+      el("td", { "data-label": "Equipment" }, p.equipment, el("div", { class: "muted" }, `${durationText(p.backup_minutes)} of backup`)),
+      el("td", { class: "num", "data-label": "Acuity" }, acuityBadge(p.acuity)),
+      el("td", { class: "cell-wide", "data-label": "Call list" }, el("span", { class: "count-pill" }, String(p.contacts.length)),
+        ` ${p.contacts.map((c) => c.name).join(", ")}`),
+      el("td", { class: "code", "data-label": "Unit" }, p.device_id),
+      el("td", { class: "cell-action" }, el("button", { class: "link-action", type: "button", "aria-label": `${editing ? "Edit" : "Details for"} ${nameParts(p.name)[0]}`,
+        onclick: () => (editing ? openForm(p) : openDetails(p)) }, editing ? "Edit" : "Details")),
     ))),
   ));
 }
@@ -439,7 +527,6 @@ document.getElementById("history-print").addEventListener("click", () => window.
 
 const KIND_LABEL = { power: "Power outage", silent: "Unit silent", storm: "Storm notice", machine: "Machine stopped",
                      help: "Help button", temperature: "Room temperature" };
-const KIND_TAG = { power: "tag-out", machine: "tag-out", help: "tag-out", silent: "", storm: "tag-storm", temperature: "tag-storm" };
 const ADVISORY_KINDS = new Set(["silent", "storm", "temperature"]);
 
 async function loadHistory() {
@@ -489,7 +576,7 @@ function renderHistoryTable() {
   const body = document.getElementById("history-body");
   const shown = historyFilters.mount(historyIncidents);
   if (!shown.length) { body.replaceChildren(noMatch("incidents")); return; }
-  body.replaceChildren(el("table", { class: "stack-table" },
+  body.replaceChildren(el("table", { class: "data-table stack-table" },
     el("thead", {}, el("tr", {}, ["Started", "Patient", "What happened", "Lasted", "Alerted", "Response"].map((h) => el("th", { scope: "col" }, h)))),
     el("tbody", {}, shown.map(historyRow))));
 }
@@ -572,22 +659,27 @@ function historyRow(incident) {
   const ongoing = incident.ended_at === null;
   return el("tr", {},
     el("td", { class: "num", "data-label": "Started" }, dateTime(incident.started_at)),
-    el("td", { "data-label": "Patient" }, el("strong", {}, incident.patient_name), el("div", { class: "muted code" }, incident.device_id)),
+    el("td", { "data-label": "Patient" }, el("div", { class: "cell-name" }, nameNode(incident.patient_name)), el("div", { class: "muted code" }, incident.device_id)),
     el("td", { "data-label": "What happened" },
-      el("span", { class: `tag ${KIND_TAG[incident.kind]}` }, KIND_LABEL[incident.kind]),
+      kindChip(incident.kind),
       el("div", { class: "muted" }, incident.detail || incident.equipment)),
     el("td", { class: "num", "data-label": "Lasted" },
-      ongoing ? el("span", { class: "tag tag-ongoing" }, "Ongoing") : durationText(incident.duration_minutes)),
+      ongoing ? (EMERGENCY_KINDS.has(incident.kind) ? chip("out", "Ongoing") : el("span", { class: "tag" }, "Ongoing")) : durationText(incident.duration_minutes)),
     el("td", { class: "cell-wide", "data-label": "Alerted" },
       incident.alerted.length ? listNames(incident.alerted.map((a) => a.name)) : "Nobody yet"),
     el("td", { class: "cell-wide", "data-label": "Response" }, responseText(incident)));
 }
 
+const KIND_STATE = { power: "out", machine: "out", help: "out", silent: "silent" };
+function kindChip(kind) {
+  return KIND_STATE[kind] ? chip(KIND_STATE[kind], KIND_LABEL[kind]) : el("span", { class: "tag tag-storm" }, KIND_LABEL[kind]);
+}
+
 function responseText(incident) {
   if (ADVISORY_KINDS.has(incident.kind)) return el("span", { class: "muted" }, "Not needed");
-  if (incident.acknowledged_by) return `${incident.acknowledged_by} after ${durationText(incident.response_minutes)}`;
-  if (incident.ended_at === null && !incident.acknowledged_by) return "Waiting";
-  return el("span", { class: "no-response" }, "No one responded");
+  if (incident.acknowledged_by) return el("span", { class: "response-ok" }, glyph("responding"), `${incident.acknowledged_by} after ${durationText(incident.response_minutes)}`);
+  if (incident.ended_at === null && !incident.acknowledged_by) return el("span", { class: "response-wait" }, "Waiting");
+  return el("span", { class: "no-response" }, glyph("unreached"), "No one responded");
 }
 
 // ---- unit health -------------------------------------------------------------------
@@ -616,7 +708,7 @@ function sensorsText(unit) {
 }
 
 const UNIT_FIELDS = [
-  { key: "status", label: "Status", value: stateOf, names: LIVE_STATUS, order: STATE_ORDER },
+  { key: "status", label: "Status", value: displayState, names: DISPLAY_WORD, order: SILENT_FIRST },
   { key: "town", label: "Town", value: (u) => townFromAddress(u.address) },
 ];
 const unitState = { status: null, town: null, search: "" };
@@ -630,19 +722,30 @@ function renderUnits() {
       el("p", { class: "muted" }, "Add a patient and set up their power unit to see it here.")));
     return;
   }
-  const units = unitFilters.mount(lastUnits).sort((a, b) => byUrgency(stateOf)(a, b) || a.name.localeCompare(b.name));
+  const health = (u) => rankIn(SILENT_FIRST)(displayState(u));
+  const units = unitFilters.mount(lastUnits).sort((a, b) => health(a) - health(b) || a.name.localeCompare(b.name));
   if (!units.length) { body.replaceChildren(noMatch("units")); return; }
-  body.replaceChildren(el("table", { class: "stack-table" },
-    el("thead", {}, el("tr", {}, ["Patient", "Status", "Last report", "Wi-Fi", "Sensors", "Firmware", "Running for"].map((h) => el("th", { scope: "col" }, h)))),
+  body.replaceChildren(el("table", { class: "data-table stack-table" },
+    el("thead", {}, el("tr", {}, ["Unit", "Status", "Last report", "Battery", "Wi-Fi", "Sensors", "Firmware", "Running for"].map((h) => el("th", { scope: "col" }, h)))),
     el("tbody", {}, units.map((unit) => el("tr", {},
-      el("td", { "data-label": "Patient" }, el("strong", {}, unit.name), el("div", { class: "muted code" }, unit.device_id)),
-      el("td", { "data-label": "Status" }, statusCell(stateOf(unit))),
-      el("td", { class: "num", "data-label": "Last report" }, unit.last_seen ? secondsAgo(unit.last_seen) : "Never"),
-      el("td", { class: "cell-wide", "data-label": "Wi-Fi" }, signalCell(unit.rssi)),
+      el("td", { "data-label": "Unit" }, el("div", { class: "cell-name" }, nameNode(unit.name)), el("div", { class: "muted code" }, unit.device_id)),
+      el("td", { "data-label": "Status" }, statusCell(unit),
+        unit.status === "offline" ? el("div", { class: "muted" }, `silent for ${durationText(minutesSince(unit.last_seen))}`) : null),
+      el("td", { class: "num", "data-label": "Last report" }, unit.last_seen ? secondsAgo(unit.last_seen) : el("span", { class: "muted" }, "Never connected")),
+      el("td", { class: "num", "data-label": "Battery" }, batteryCell(unit.battery_percent)),
+      el("td", { "data-label": "Wi-Fi" }, signalCell(unit.rssi)),
       el("td", { "data-label": "Sensors" }, sensorsText(unit)),
-      el("td", { class: "code", "data-label": "Firmware" }, unit.firmware ?? "Unknown"),
-      el("td", { class: "num", "data-label": "Running for" }, unit.uptime_s === null ? "Unknown" : uptimeText(unit.uptime_s)),
+      el("td", { class: "code", "data-label": "Firmware" }, unit.firmware ?? el("span", { class: "muted" }, "Unknown")),
+      el("td", { class: "num", "data-label": "Running for" }, unit.uptime_s === null ? el("span", { class: "muted" }, "Unknown") : uptimeText(unit.uptime_s)),
     )))));
+}
+
+// The unit's own battery (not the patient's equipment backup): ink, with "low" in words under 20 %.
+function batteryCell(percent) {
+  if (percent === null || percent === undefined) return el("span", { class: "muted" }, "Not reported");
+  const meter = el("span", { class: "battery", "aria-hidden": "true" }, el("span"));
+  meter.firstChild.style.width = `${Math.max(4, Math.min(100, percent))}%`;
+  return el("span", { class: `battery-cell${percent < 20 ? " is-low" : ""}` }, meter, `${percent}%${percent < 20 ? ", low" : ""}`);
 }
 
 // ---- add / edit panel ----------------------------------------------------------
@@ -672,19 +775,44 @@ function select(name, options, value) {
 function contactRow(contact = {}) {
   // Rows repeat, so every control gets a unique id for its label.
   const unique = (control) => { control.id = `c-${crypto.randomUUID()}`; return control; };
+  // Roles are free text on the server and decide who counts as care staff or county, so a saved role
+  // that isn't one of the choices ("agency", "caregiver") must survive an edit, not turn into "Family".
+  const savedRole = contact.role?.trim() ?? "";
+  const knownRole = ROLES.find((r) => r.toLowerCase() === savedRole.toLowerCase());
+  const roleChoices = savedRole && !knownRole ? [...ROLES, savedRole] : ROLES;
+  const move = (step) => {
+    const sibling = step < 0 ? row.previousElementSibling : row.nextElementSibling;
+    if (!sibling) return;
+    row.parentElement.insertBefore(row, step < 0 ? sibling : sibling.nextElementSibling);
+    renumber();
+    row.querySelector(step < 0 ? "[data-move=up]" : "[data-move=down]")?.focus();
+  };
   const row = el("div", { class: "contact-row" },
     el("span", { class: "contact-order", "aria-hidden": "true" }),
     field("Name", unique(input("c-name", contact.name, { required: true, autocomplete: "off" }))),
-    field("Role", unique(select("c-role", ROLES.map((r) => [r, r]), contact.role || "Family"))),
+    field("Role", unique(select("c-role", roleChoices.map((r) => [r, r]), knownRole || savedRole || "Family"))),
     field("Phone", unique(input("c-phone", contact.phone, { type: "tel", placeholder: "+1 601 555 0123", required: true })), null, "field field-wide"),
     field("Reach by", unique(select("c-channel", [["sms", "Text"], ["call", "Phone call"]], contact.channel || "sms"))),
-    el("button", { class: "btn btn-quiet btn-small", type: "button", "aria-label": "Remove contact", onclick: () => { row.remove(); renumber(); } }, "Remove"),
+    el("div", { class: "contact-tools" },
+      el("button", { class: "link-action", type: "button", "data-move": "up", onclick: () => move(-1) }, "Move up"),
+      el("button", { class: "link-action", type: "button", "data-move": "down", onclick: () => move(1) }, "Move down"),
+      el("button", { class: "link-action is-danger", type: "button", "data-remove": "", onclick: () => { row.remove(); renumber(); } }, "Remove")),
   );
   return row;
 }
 
+// Order numbers, and labels that say which person each button moves or removes.
 function renumber() {
-  panelContent.querySelectorAll(".contact-order").forEach((badge, index) => { badge.textContent = `${index + 1}`; });
+  const rows = [...panelContent.querySelectorAll(".contact-row")];
+  rows.forEach((row, index) => {
+    row.querySelector(".contact-order").textContent = `${index + 1}`;
+    const who = row.querySelector("[name=c-name]").value.trim() || `person ${index + 1}`;
+    row.querySelector("[data-move=up]").disabled = index === 0;
+    row.querySelector("[data-move=down]").disabled = index === rows.length - 1;
+    row.querySelector("[data-move=up]").setAttribute("aria-label", `Move ${who} up the call list`);
+    row.querySelector("[data-move=down]").setAttribute("aria-label", `Move ${who} down the call list`);
+    row.querySelector("[data-remove]").setAttribute("aria-label", `Remove ${who} from the call list`);
+  });
 }
 
 function openForm(patient) {
@@ -692,7 +820,7 @@ function openForm(patient) {
   document.getElementById("panel-title").textContent = editing ? `Edit ${patient.name}` : "Add patient";
   const contacts = el("div", { id: "contacts", class: "contacts" }, (patient?.contacts?.length ? patient.contacts : [{}]).map(contactRow));
   const error = el("p", { class: "form-error", role: "alert", hidden: true });
-  const save = el("button", { class: "btn", type: "submit" }, editing ? "Save changes" : "Add patient");
+  const save = el("button", { class: "btn btn-primary", type: "submit" }, editing ? "Save changes" : "Add patient");
 
   const form = el("form", { novalidate: true },
     error,
@@ -728,16 +856,19 @@ function openForm(patient) {
       el("legend", {}, "Call list"),
       el("p", { class: "hint muted" }, "We alert the first person right away, then the next one every few minutes until someone responds."),
       contacts,
-      el("button", { class: "btn btn-quiet btn-small", type: "button", onclick: () => { contacts.append(contactRow()); renumber(); } }, "Add contact")),
+      el("button", { class: "btn btn-quiet", type: "button", onclick: () => { contacts.append(contactRow()); renumber(); contacts.lastElementChild.querySelector("input").focus(); } }, "Add contact")),
     el("div", { class: "panel-actions" },
       save,
       el("button", { class: "btn btn-quiet", type: "button", onclick: () => panel.close() }, "Cancel"),
       editing ? removeButton(patient) : null),
   );
 
+  // A corrected field stops being marked as wrong as soon as it is edited.
+  form.addEventListener("input", (event) => { event.target.removeAttribute("aria-invalid"); if (event.target.name === "c-name") renumber(); });
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     error.hidden = true;
+    form.querySelectorAll("[aria-invalid]").forEach((node) => node.removeAttribute("aria-invalid"));
     try {
       const body = readForm(form);
       const saved = await withButton(save, () => guarded(editing
@@ -750,6 +881,7 @@ function openForm(patient) {
       error.textContent = failure.message;
       error.hidden = false;
       error.scrollIntoView({ block: "nearest" });
+      form.querySelector("[aria-invalid=true]")?.focus({ preventScroll: true });
     }
   });
 
@@ -761,11 +893,11 @@ function openForm(patient) {
 }
 
 // Read only, for care staff: how to reach the patient and their people, and what the plan says.
-function openDetails(patient) {
-  document.getElementById("panel-title").textContent = patient.name;
+/** Facts, call list and emergency plan: the same blocks in the side panel and in an opened board row. */
+function patientDetails(patient) {
   const plan = patient.plan ?? {};
   const fact = (label, value) => (value || value === 0) ? el("div", {}, el("dt", {}, label), el("dd", {}, String(value))) : null;
-  panelContent.replaceChildren(
+  return [
     el("div", { class: "panel-body" },
       el("dl", { class: "facts" },
         fact("Address", patient.address),
@@ -785,6 +917,13 @@ function openDetails(patient) {
             fact("Nearest place with power", [plan.place_name, plan.place_address, plan.place_phone].filter(Boolean).join(", ")),
             fact("What to do", plan.steps))
         : el("p", { class: "muted" }, "No plan yet. Ask an admin to add one.")),
+  ];
+}
+
+function openDetails(patient) {
+  document.getElementById("panel-title").textContent = patient.name;
+  panelContent.replaceChildren(
+    ...patientDetails(patient),
     recentIncidentsBlock(patient),
     el("div", { class: "panel-body" }, el("div", { class: "panel-actions" },
       el("button", { class: "btn", type: "button", onclick: () => panel.close() }, "Close"))),
@@ -812,20 +951,21 @@ async function loadStaff() {
     roleSelect.replaceChildren(...roleOptions.map((r) => el("option", { value: r.value }, r.label)));
     roleSelect.value = "nurse";  // the most common grant; admin is a deliberate choice
   }
-  body.replaceChildren(el("table", { class: "stack-table" },
-    el("thead", {}, el("tr", {}, ["Email", "Role", ""].map((h) => el("th", { scope: "col" }, h)))),
+  body.replaceChildren(el("table", { class: "data-table stack-table" },
+    el("thead", {}, el("tr", {}, ["Email", "Role"].map((h) => el("th", { scope: "col" }, h)), el("th", { scope: "col" }, el("span", { class: "visually-hidden" }, "Actions")))),
     el("tbody", {}, staff.map(staffRow))));
 }
 
 function staffRow(person) {
   const isMe = person.email === me.email;
-  const role = el("select", { class: "input input-small", "aria-label": `Role for ${person.email}`, disabled: isMe },
+  const role = el("select", { class: "input input-small", name: "role", "aria-label": `Role for ${person.email}`, disabled: isMe },
     roleOptions.map((r) => el("option", { value: r.value, selected: r.value === person.role }, r.label)));
   const note = el("span", { class: "form-error", role: "alert", hidden: true });
   role.addEventListener("change", async () => {
     note.hidden = true;
     try {
       await guarded(api("PUT", "/api/staff", { email: person.email, role: role.value }));
+      person.role = role.value;  // a later refused change falls back to this, not to the role on first load
     } catch (error) {
       note.textContent = error.message;
       note.hidden = false;
@@ -836,7 +976,9 @@ function staffRow(person) {
   remove.addEventListener("click", async () => {
     if (remove.dataset.confirm !== "yes") {
       remove.dataset.confirm = "yes";
-      remove.textContent = "Confirm remove";
+      remove.textContent = `Confirm: remove ${person.email}`;
+      // Two steps, no browser dialog; an unconfirmed tap quietly disarms.
+      setTimeout(() => { if (remove.isConnected && remove.dataset.confirm === "yes") { delete remove.dataset.confirm; remove.textContent = "Remove access"; } }, 6000);
       return;
     }
     try {
@@ -850,7 +992,7 @@ function staffRow(person) {
   return el("tr", {},
     el("td", { "data-label": "Email" }, el("strong", {}, person.email), isMe ? el("span", { class: "muted" }, " (you)") : null),
     el("td", { "data-label": "Role" }, role, note),
-    el("td", {}, remove));
+    el("td", { class: "cell-action" }, remove));
 }
 
 staffForm.addEventListener("submit", async (event) => {
@@ -875,8 +1017,9 @@ function showNewAccount(added) {
   const steps = added.temporary_password
     ? [copyRow("Temporary password", added.temporary_password, true),
        el("p", {}, `Give them this password in person or by phone, not in the same message as the link. They sign in at ${location.origin}/login as ${label}, then choose their own password under "Change password".`),
-       el("p", { class: "hint muted" }, "This password is shown only once. If it is lost, remove their access and add them again for a new one.")]
-    : [el("p", {}, `They already had a sign-in account, so they keep their current password. Their role is now ${label}.`)];
+       el("p", { class: "hint muted" }, "This password is shown only once. If it is lost, add them again with the same email for a new one.")]
+    // No temporary password only happens in local mode, where everyone shares LIFELINE_ADMIN_PASSWORD.
+    : [el("p", {}, `This Lifeline uses one shared staff password (local mode), so there is no account to make. They sign in at ${location.origin}/login with that password, as ${label}.`)];
   panelContent.replaceChildren(el("div", { class: "panel-body" }, ...steps,
     el("div", { class: "panel-actions" }, el("button", { class: "btn", type: "button", onclick: () => panel.close() }, "Done"))));
   panel.showModal();
@@ -904,17 +1047,49 @@ function locateRow() {
   return el("div", { class: "locate-row" }, button, status);
 }
 
+/** "601 555 0123", "(601) 555-0123" or "+1 601-555-0123" -> "+16015550123"; "" when it can't be a phone number.
+    The server only accepts the + form, and staff type numbers the way they say them. */
+function toE164(text) {
+  const digits = text.replace(/\D/g, "");
+  if (text.trim().startsWith("+")) return digits.length >= 8 && digits.length <= 15 ? `+${digits}` : "";
+  if (digits.length === 10) return `+1${digits}`;
+  if (digits.length === 11 && digits.startsWith("1")) return `+${digits}`;
+  return "";
+}
+
+// Checks what the server would refuse, and says which field, so nobody hunts for the problem.
 function readForm(form) {
   const value = (name) => form.elements[name].value.trim();
-  const contacts = [...form.querySelectorAll(".contact-row")].map((row) => ({
-    name: row.querySelector("[name=c-name]").value.trim(),
-    role: row.querySelector("[name=c-role]").value,
-    phone: row.querySelector("[name=c-phone]").value.trim(),
-    channel: row.querySelector("[name=c-channel]").value,
-  }));
-  if (!contacts.length) throw new Error("Add at least one person to the call list.");
-  const missing = ["name", "address", "lat", "lon", "equipment", "backup_minutes"].filter((n) => !value(n));
-  if (missing.length) throw new Error("Fill in every field before saving.");
+  const problems = [];
+  const flag = (control, message) => { control.setAttribute("aria-invalid", "true"); problems.push(message); };
+  const labelOf = (name) => form.querySelector(`label[for="${form.elements[name].id}"]`)?.textContent ?? name;
+  for (const name of ["name", "address", "lat", "lon", "equipment", "backup_minutes", "device_id"]) {
+    if (!form.elements[name].disabled && !value(name)) flag(form.elements[name], `${labelOf(name)} is empty`);
+  }
+  const number = (name, low, high, words) => {
+    if (value(name) === "") return;
+    const n = Number(value(name));
+    if (!Number.isFinite(n) || n < low || n > high) flag(form.elements[name], `${labelOf(name)} must be ${words}`);
+  };
+  number("lat", -90, 90, "a number between -90 and 90");
+  number("lon", -180, 180, "a number between -180 and 180");
+  number("backup_minutes", 0, 2880, "whole minutes from 0 to 2880");
+  if (value("running_amps_min") !== "") number("running_amps_min", 0, 100, "a number of amps, or blank");
+  const unitId = form.elements.device_id;
+  if (!unitId.disabled && value("device_id") && !/^[a-z0-9-]{3,40}$/.test(value("device_id"))) {
+    flag(unitId, "Unit ID must be 3 to 40 lowercase letters, digits or dashes");
+  }
+  const rows = [...form.querySelectorAll(".contact-row")];
+  if (!rows.length) problems.push("Add at least one person to the call list");
+  const contacts = rows.map((row, index) => {
+    const name = row.querySelector("[name=c-name]");
+    const phone = row.querySelector("[name=c-phone]");
+    if (!name.value.trim()) flag(name, `Call list person ${index + 1} needs a name`);
+    if (!phone.value.trim()) flag(phone, `Call list person ${index + 1} needs a phone number`);
+    else if (!(phone.value = toE164(phone.value))) flag(phone, `Call list person ${index + 1}'s phone number should be 10 digits, or start with + and a country code`);
+    return { name: name.value.trim(), role: row.querySelector("[name=c-role]").value, phone: phone.value.trim(), channel: row.querySelector("[name=c-channel]").value };
+  });
+  if (problems.length) throw new Error(`Check ${problems.length === 1 ? "this" : "these"} before saving: ${problems.join("; ")}.`);
   return {
     device_id: value("device_id"), name: value("name"), address: value("address"),
     lat: Number(value("lat")), lon: Number(value("lon")), equipment: value("equipment"),
@@ -932,7 +1107,12 @@ function removeButton(patient) {
       button.textContent = `Confirm: stop monitoring ${patient.name}`;
       return;
     }
-    await withButton(button, () => guarded(api("DELETE", `/api/patients/${encodeURIComponent(patient.device_id)}`)));
+    try {
+      await withButton(button, () => guarded(api("DELETE", `/api/patients/${encodeURIComponent(patient.device_id)}`)));
+    } catch (error) {
+      button.textContent = error.message;
+      return;
+    }
     panel.close();
     loadRoster();
     refreshBoard();
@@ -968,7 +1148,13 @@ function copyRow(label, value, isSecret) {
 function credentialsBlock(patient) {
   const rotate = el("button", { class: "btn btn-quiet btn-small", type: "button" }, "Make a new family link");
   rotate.addEventListener("click", async () => {
-    const updated = await withButton(rotate, () => guarded(api("POST", `/api/patients/${encodeURIComponent(patient.device_id)}/rotate-link`, {})));
+    let updated;
+    try {
+      updated = await withButton(rotate, () => guarded(api("POST", `/api/patients/${encodeURIComponent(patient.device_id)}/rotate-link`, {})));
+    } catch (error) {
+      rotate.textContent = error.message;
+      return;
+    }
     showCredentials(updated, "New family link made. The old one no longer works.");
   });
   return el("div", { class: "panel-body" },

@@ -1,28 +1,14 @@
-// The live board's map: patient homes, radar, warning outlines, temperatures, legend.
+// The live board's map: patient homes as state shapes, radar, warning outlines, legend.
 // Everything Leaflet-related lives here, so if the map library fails to load the rest of
 // the platform (patients, history, buttons) still works and the map says so.
 
-import { dateTime, el, hazardText, secondsAgo, stateOf } from "./common.js";
+import { STATE_WORD, dateTime, el, glyph, hazardText, homeState, secondsAgo } from "./common.js";
 
 // Zoomed out enough to see weather coming, not just the streets around each home.
 const REGIONAL_ZOOM = 9;
 const RADAR_REFRESH_MS = 5 * 60000;
-const LABEL_MIN_GAP_PX = 44;
-
-// Colours close to the National Weather Service hazard map, so they read like any weather map.
-const WARNING_COLORS = {
-  "Tornado Warning": "#ff0000", "Severe Thunderstorm Warning": "#ffa500", "Extreme Wind Warning": "#ff8c00",
-  "High Wind Warning": "#daa520", "Ice Storm Warning": "#8b008b", "Winter Storm Warning": "#ff69b4",
-  "Blizzard Warning": "#ff4500", "Hurricane Warning": "#dc143c", "Tropical Storm Warning": "#b22222",
-  "Extreme Cold Warning": "#0000ff", "Extreme Heat Warning": "#c71585", "Excessive Heat Warning": "#c71585",
-  "Tornado Watch": "#c9b400", "Severe Thunderstorm Watch": "#db7093", "Hurricane Watch": "#ff00ff",
-  "Tropical Storm Watch": "#f08080", "Winter Storm Watch": "#4682b4", "High Wind Watch": "#b8860b",
-  "Wind Advisory": "#c19a6b", "Winter Weather Advisory": "#7b68ee", "Extreme Cold Watch": "#5f9ea0",
-};
-
-function warningColor(event) {
-  return WARNING_COLORS[event.replace(/ \(demo\)$/, "")] ?? "#d97706";
-}
+const WARNING_STROKE = "#C9861A";  // one amber for every warning: red on this map only ever means a patient
+const SHAPE_ORDER = ["critical", "unreached", "out", "responding", "silent", "on"];  // drawn on top first
 
 export function conditionsText(c) {
   const parts = [];
@@ -32,7 +18,10 @@ export function conditionsText(c) {
   return parts.join(", ");
 }
 
-const NO_MAP = { showUnits() {}, showWeather() {}, weatherUnavailable() {}, resize() {}, focus() {}, fitTo() {}, showRanks() {} };
+// Jump instead of fly for people who asked the system for less motion; checked per move, as it can change.
+const animate = () => !matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+const NO_MAP = { showUnits() {}, showWeather() {}, weatherUnavailable() {}, resize() {}, focus() {}, fitTo() {} };
 
 /** `labelFor(unit)` gives the board's wording for a unit, shared with the list beside the map. */
 export function createBoardMap(container, { center, labelFor, onSelect = () => {} }) {
@@ -46,26 +35,21 @@ export function createBoardMap(container, { center, labelFor, onSelect = () => {
   L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
     { attribution: "© OpenStreetMap contributors", className: "basemap-tiles" }).addTo(map);
 
-  const tokens = getComputedStyle(document.documentElement);
-  const markerColor = Object.fromEntries(
-    [["out", "--color-out"], ["acked", "--color-acked"], ["on", "--color-on"], ["quiet", "--color-quiet"]]
-      .map(([state, token]) => [state, tokens.getPropertyValue(token).trim()]));
   const markers = new Map();
-  const tempLabels = new Map();
-  const rankPins = new Map();  // device id -> numbered pin, matching the triage list
   let fitted = false;
   let lastUnits = [];
+  let lastWeather = null;
+  let focused = null;
 
   const radar = L.tileLayer.wms("https://opengeo.ncep.noaa.gov/geoserver/conus/conus_bref_qcd/ows", {
-    layers: "conus_bref_qcd", format: "image/png", transparent: true, opacity: 0.6, attribution: "Weather: NOAA NWS",
+    layers: "conus_bref_qcd", format: "image/png", transparent: true, opacity: 0.6, attribution: "Weather: NOAA NWS", className: "radar-tiles",
   }).addTo(map);
   setInterval(() => radar.setParams({ refreshed: Date.now() }), RADAR_REFRESH_MS);
 
   const warningLayer = L.geoJSON(null, {
     style: (feature) => {
       const high = feature.properties.level === "high";
-      return { color: warningColor(feature.properties.event), weight: high ? 3 : 2, dashArray: high ? null : "6 5",
-               fillOpacity: high ? 0.16 : 0.07 };
+      return { color: WARNING_STROKE, weight: 2, dashArray: high ? null : "6 5", fillColor: "#F4B740", fillOpacity: high ? 0.12 : 0.06 };
     },
     onEachFeature: (feature, layer) => layer.bindTooltip(
       el("div", { class: "map-tip" }, el("strong", {}, feature.properties.event), el("div", {}, `Until ${dateTime(feature.properties.ends)}`)),
@@ -78,74 +62,71 @@ export function createBoardMap(container, { center, labelFor, onSelect = () => {
   legend.onAdd = () => el("div", { class: "map-legend", id: "map-legend" });
   legend.addTo(map);
 
+  // A pin is the state's shape on a white disc; power on is the small hollow dot. Elements, not
+  // HTML strings: nothing typed by staff ever reaches innerHTML.
+  function pinIcon(state) {
+    const size = state === "on" ? 24 : 40;  // keep in step with .pin in app.css
+    return L.divIcon({ className: "pin-icon", html: el("span", { class: `pin is-${state}` }, glyph(state)), iconSize: [size, size] });
+  }
+
   function placeMarker(unit) {
-    const state = stateOf(unit);
-    const style = { radius: state === "out" ? 13 : 8, color: markerColor[state], fillColor: markerColor[state], fillOpacity: 0.85, weight: 2 };
+    const state = homeState(unit);
     let marker = markers.get(unit.device_id);
     if (!marker) {
-      marker = L.circleMarker([unit.lat, unit.lon], style).addTo(map);
+      marker = L.marker([unit.lat, unit.lon], { keyboard: false }).addTo(map);
+      marker.on("click", () => onSelect(unit.device_id));
       markers.set(unit.device_id, marker);
+    }
+    if (marker.state !== state) {
+      marker.setIcon(pinIcon(state));
+      marker.setZIndexOffset((SHAPE_ORDER.length - SHAPE_ORDER.indexOf(state)) * 100);
+      marker.state = state;
+      if (focused === unit.device_id) marker.getElement()?.classList.add("is-focused");
     }
     // A DOM node, not an HTML string: patient names are typed by staff.
     const tip = el("div", { class: "map-tip" }, el("strong", {}, unit.name), el("div", {}, labelFor(unit)),
       unit.conditions ? el("div", {}, conditionsText(unit.conditions)) : null,
       ...unit.hazards.map((h) => el("div", { class: "map-tip-hazard" }, hazardText(h))));
-    marker.setLatLng([unit.lat, unit.lon]).setStyle(style).setRadius(style.radius).bindTooltip(tip);
+    marker.setLatLng([unit.lat, unit.lon]).bindTooltip(tip, { direction: "right", offset: [14, 0] });
   }
 
-  // One temperature label per spot on screen: homes close together share the first label,
-  // and every home's full conditions stay in its hover tooltip.
-  function placeTemperatures(units) {
-    for (const label of tempLabels.values()) label.remove();
-    tempLabels.clear();
-    const placed = [];
-    for (const unit of units) {
-      const temperature = unit.conditions?.temperature_f;
-      if (temperature === null || temperature === undefined) continue;
-      const point = map.latLngToContainerPoint([unit.lat, unit.lon]);
-      if (placed.some((other) => other.distanceTo(point) < LABEL_MIN_GAP_PX)) continue;
-      placed.push(point);
-      const icon = L.divIcon({ className: "temp-label", html: `${Number(temperature)}°`, iconSize: null, iconAnchor: [-12, 9] });
-      tempLabels.set(unit.device_id, L.marker([unit.lat, unit.lon], { icon, interactive: false, keyboard: false }).addTo(map));
-    }
+  // The coldest reading right now at a home inside a warning, stated once instead of on every pin.
+  function coldest() {
+    const readings = lastUnits.filter((u) => u.hazards.length).map((u) => u.conditions?.temperature_f).filter((t) => t !== null && t !== undefined);
+    return readings.length ? Math.min(...readings) : null;
   }
-  map.on("zoomend", () => placeTemperatures(lastUnits));
 
-  function renderLegend(weather) {
-    const events = [...new Map(weather.areas.features.map((f) => [f.properties.event, f.properties.level])).entries()];
-    const swatch = (color, dashed) => el("span", { class: `swatch${dashed ? " is-dashed" : ""}`, style: `--swatch: ${color}` });
-    document.getElementById("map-legend").replaceChildren(...[
-      el("strong", {}, weather.mode === "demo" ? "Weather (demo storm)" : "Weather"),
+  function renderLegend() {
+    const weather = lastWeather;
+    const node = document.getElementById("map-legend");
+    if (!node) return;
+    const events = weather ? [...new Map(weather.areas.features.map((f) => [f.properties.event, f.properties.level])).entries()] : [];
+    const low = coldest();
+    const shapes = ["critical", "out", "unreached", "responding", "silent", "on"];
+    node.replaceChildren(...[
+      el("strong", {}, weather?.mode === "demo" ? "Weather (demo storm)" : "Weather"),
       el("div", { class: "legend-row legend-extra" }, el("span", { class: "radar-scale", "aria-hidden": "true" }), "Radar: light to heavy"),
-      ...(weather.mode === "off" ? [el("div", { class: "muted" }, "Storm Watch is off")]
-        : events.length ? events.map(([event, level]) => el("div", { class: "legend-row" }, swatch(warningColor(event), level !== "high"), event))
+      ...(!weather ? [el("div", { class: "muted" }, "Checking the weather")]
+        : weather.mode === "off" ? [el("div", { class: "muted" }, "Storm Watch is off")]
+        : events.length ? events.map(([event, level]) => el("div", { class: "legend-row" }, el("span", { class: `swatch${level !== "high" ? " is-dashed" : ""}` }), event))
         : [el("div", { class: "muted" }, "No warnings or watches near your homes")]),
-      weather.checked_at ? el("div", { class: "muted legend-extra" }, `Checked ${secondsAgo(weather.checked_at)}`) : null,
+      low !== null && events.length ? el("div", { class: "muted legend-extra" }, `Coldest reading now ${low}°F across the warning area`) : null,
+      el("strong", { class: "legend-homes-title" }, "Homes"),
+      el("ul", { class: "legend-homes" }, shapes.map((state) => el("li", {}, glyph(state), STATE_WORD[state]))),
+      weather?.checked_at ? el("div", { class: "muted legend-extra" }, `Checked ${secondsAgo(weather.checked_at)}`) : null,
     ].filter(Boolean));
   }
 
   return {
-    /** Numbered pins on the homes that need someone, in triage order; a tap selects that home. */
-    showRanks(ranked) {
-      const live = new Set(ranked.map((u) => u.device_id));
-      for (const [id, pin] of rankPins) if (!live.has(id)) { pin.remove(); rankPins.delete(id); }
-      ranked.forEach((unit, index) => {
-        const html = `<span class="rank-pin is-${stateOf(unit)}">${index + 1}</span>`;
-        let pin = rankPins.get(unit.device_id);
-        if (!pin) {
-          pin = L.marker([unit.lat, unit.lon], { keyboard: false, zIndexOffset: 1000 }).addTo(map);
-          pin.on("click", () => onSelect(unit.device_id));
-          rankPins.set(unit.device_id, pin);
-        }
-        pin.setLatLng([unit.lat, unit.lon]).setIcon(L.divIcon({ className: "rank-pin-icon", html, iconSize: [26, 26] }));
-      });
-    },
     fitTo(units) {
       fitted = true;  // the first-load overview must not undo this
-      if (units.length) map.flyToBounds(L.latLngBounds(units.map((u) => [u.lat, u.lon])).pad(0.3), { maxZoom: 12, duration: 0.8 });
+      if (units.length) map.flyToBounds(L.latLngBounds(units.map((u) => [u.lat, u.lon])).pad(0.3), { maxZoom: 12, duration: 0.8, animate: animate() });
     },
     focus(unit) {
-      map.flyTo([unit.lat, unit.lon], Math.max(map.getZoom(), 12), { duration: 0.6 });
+      map.flyTo([unit.lat, unit.lon], Math.max(map.getZoom(), 12), { duration: 0.6, animate: animate() });
+      if (focused) markers.get(focused)?.getElement()?.classList.remove("is-focused");
+      focused = unit.device_id;
+      markers.get(unit.device_id)?.getElement()?.classList.add("is-focused");
       markers.get(unit.device_id)?.openTooltip();
     },
     showUnits(units) {
@@ -153,7 +134,7 @@ export function createBoardMap(container, { center, labelFor, onSelect = () => {
       units.forEach(placeMarker);
       const live = new Set(units.map((u) => u.device_id));
       for (const [id, marker] of markers) if (!live.has(id)) { marker.remove(); markers.delete(id); }
-      placeTemperatures(units);
+      renderLegend();
       if (!fitted && units.length) {
         // Once, on first load: every home in view with room around it, then the user is in charge.
         map.fitBounds(L.latLngBounds(units.map((u) => [u.lat, u.lon])).pad(1.5), { maxZoom: REGIONAL_ZOOM });
@@ -163,7 +144,8 @@ export function createBoardMap(container, { center, labelFor, onSelect = () => {
     showWeather(weather) {
       warningLayer.clearLayers();
       warningLayer.addData(weather.areas);
-      renderLegend(weather);
+      lastWeather = weather;
+      renderLegend();
     },
     weatherUnavailable() {
       document.getElementById("map-legend").replaceChildren(el("strong", {}, "Weather"), el("div", { class: "muted" }, "Weather unavailable, retrying"));

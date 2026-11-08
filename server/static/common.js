@@ -106,3 +106,52 @@ export function uptimeText(seconds) {
   const days = Math.floor(seconds / 86400);
   return days ? `${plural(days, "day")} ${Math.floor((seconds % 86400) / 3600)} h` : durationText(Math.floor(seconds / 60));
 }
+
+// ---- one shape and one word per state, everywhere (board, map, county, family) ------------
+
+export const STATE_WORD = {
+  critical: "Under 15 min", out: "Power out", unreached: "No answer", responding: "Responding", silent: "Unit silent", on: "Power on",
+};
+
+/** The display state of a home. Board rows carry acknowledged_by, county rows carry responder.
+    A claimed home shows "Responding" even under 15 min: the shape says someone is coming. */
+export function homeState(row) {
+  if (row.status === "outage") {
+    if (row.acknowledged_by || row.responder) return "responding";
+    if (row.critical) return "critical";
+    return row.unreached ? "unreached" : "out";
+  }
+  return row.status === "ok" ? "on" : "silent";  // offline or never seen: unknown, never assumed fine
+}
+
+/** The state's shape, drawn in CSS (see .glyph in app.css). Decorative: always paired with a word. */
+export function glyph(state) {
+  return el("span", { class: `glyph is-${state}`, "aria-hidden": "true" });
+}
+
+export function chip(state, word = STATE_WORD[state]) {
+  return el("span", { class: `chip-state is-${state}` }, glyph(state), word);
+}
+
+/** "Ruth A. (synthetic)" -> the name, and the honesty marker set small beside it. */
+export function nameParts(name) {
+  const match = /^(.*?)\s*(\(synthetic\))$/.exec(name);
+  return match ? [match[1], match[2]] : [name, ""];
+}
+
+export function nameNode(name, tag = "strong") {
+  const [plain, marker] = nameParts(name);
+  return [el(tag, { class: "who-name" }, plain), marker ? el("span", { class: "synthetic" }, ` ${marker}`) : null];
+}
+
+// Backup colour follows time left and is never green: ink over 2 h, amber to 15 min, red under.
+const TWO_HOURS_MS = 2 * 3600000;
+const FIFTEEN_MIN_MS = 15 * 60000;
+export function backupTone(msLeft) {
+  if (msLeft > TWO_HOURS_MS) return "ink";
+  return msLeft > FIFTEEN_MIN_MS ? "amber" : "red";
+}
+
+export function runsOutAt(row) {
+  return row.outage_started && row.backup_minutes ? new Date(Date.parse(row.outage_started) + row.backup_minutes * 60000).toISOString() : null;
+}

@@ -1,6 +1,33 @@
 /* Hallmark · scope: app UI · tone: calm clinical · anchor hue: alarm red 27 on cool neutral 170 */
 @import url("tokens.css");
 
+/* App v2 palette (UIdesign.pen variables), layered over tokens.css: the same meanings, the design's exact values.
+   Red only for danger; amber only for "a person is coming"; green only for "power on", small and quiet. */
+:root {
+  --color-paper: #F3F6F4;
+  --color-paper-raised: #FFFFFF;
+  --color-paper-sunk: #E6EDEA;
+  --color-ink: #16252F;
+  --color-ink-muted: #4D5F69;
+  --color-rule: #D5DFDB;
+  --color-rule-strong: #B9C6C1;
+  --color-out: #D2392F;
+  --color-out-ink: #A92A22;
+  --color-out-wash: #D2392F14;
+  --color-out-line: #D2392F40;
+  --color-acked: #F4B740;
+  --color-acked-deep: #C9891C;
+  --color-acked-ink: #8A5A0C;
+  --color-acked-wash: #F4B74026;
+  --color-storm: #C9861A;
+  --color-on: #3FA37A;
+  --color-on-ink: #FFFFFF;
+  --color-on-text: #2B7A59;
+  --color-quiet: #7A8A93;
+  --color-quiet-wash: #7A8A931F;
+  --font-display: "Bricolage Grotesque", "Atkinson Hyperlegible Next", system-ui, sans-serif;
+}
+
 /* ---- base ---------------------------------------------------------------- */
 *, *::before, *::after { box-sizing: border-box; }
 html, body { overflow-x: clip; }
@@ -81,14 +108,9 @@ select.input { padding-right: var(--space-lg); }
 /* The out dot stays solid (a faded dot reads as "off" from across a room); a ring pulses out of it. */
 .state-dot { position: relative; width: 0.75rem; height: 0.75rem; border-radius: 50%; flex: none; background: var(--color-quiet); }
 .is-out .state-dot { background: var(--color-out); }
-.is-out .state-dot::after {
-  content: ""; position: absolute; inset: 0; border-radius: 50%; background: var(--color-out);
-  animation: beacon 1.6s var(--ease-out) infinite;
-}
 .is-on .state-dot { background: var(--color-on); }
 .is-acked .state-dot { background: var(--color-acked); }
 .is-acked .state-dot::after { content: none; }
-@keyframes beacon { from { transform: scale(1); opacity: 0.55; } to { transform: scale(2.6); opacity: 0; } }
 
 .meter { height: 0.5rem; border-radius: 999px; background: var(--color-paper-sunk); overflow: hidden; }
 .meter > span { display: block; height: 100%; background: var(--color-out); transform-origin: left; transition: transform var(--dur-base) var(--ease-out); }
@@ -119,41 +141,35 @@ select.input { padding-right: var(--space-lg); }
    the headline and the storm banner and setup list drop below them. */
 .triage { position: relative; overflow-y: auto; overscroll-behavior: contain; border-right: var(--rule-hair); display: flex; flex-direction: column; }
 .triage > * { flex: none; }
-.triage:has(.unit.is-out, .unit.is-acked) > #units { order: 1; }
-.triage:has(.unit.is-out, .unit.is-acked) > .storm-banner { order: 2; }
+.triage:has(.action-card, .triage-row) > #units { order: 1; }
+.triage:has(.action-card, .triage-row) > .storm-banner { order: 2; }
 .triage > .attention { order: 3; }
 
 .headline { padding: var(--space-xl) var(--space-xl) var(--space-lg); border-bottom: var(--rule-hair); }
 .headline h1 { font-size: clamp(2rem, 1.1rem + 1.9vw, 2.75rem); font-weight: 800; letter-spacing: -0.02em; }
-.headline p { margin-top: var(--space-xs); color: var(--color-ink-muted); font-size: var(--text-lg); }
 /* The hero moment: someone is out and nobody has answered. The alarm colour at full strength,
    the only place on the board it fills a whole band. */
 .headline.is-alarm { background: var(--color-out); color: var(--color-on-ink); border-bottom-color: transparent; }
-.headline.is-alarm p { color: var(--color-on-ink); opacity: 0.92; font-weight: 700; }
 /* Every outage has a responder: amber band, ink text (amber is a fill, not a text colour). */
-.triage:has(.unit.is-acked):not(:has(.unit.is-out)) > .headline { background: var(--color-acked-wash); box-shadow: inset 6px 0 0 var(--color-acked); }
+.headline.is-handled { background: var(--color-acked-wash); box-shadow: inset 6px 0 0 var(--color-acked); }
 #map { min-height: 20rem; background: var(--color-paper-sunk); }
-/* Street map in colour but softened, so radar, warning outlines and patient dots read on top.
-   Only the street tiles: the radar shares the tile pane and must keep its rain colours. */
-#map .basemap-tiles { filter: saturate(0.55) brightness(1.04); }
+/* Street map in full colour, as staff know it; only the street tiles are touched, so the radar
+   keeps its rain colours (green light, yellow moderate, red heavy). */
+#map .basemap-tiles { filter: saturate(0.9); }
 
 /* weather on the map: radar, warning outlines, temperatures, legend */
 .map-legend { background: var(--color-paper-raised); color: var(--color-ink); padding: var(--space-sm) var(--space-md); border-radius: var(--radius-md); box-shadow: 0 2px 10px var(--color-shadow); display: grid; gap: var(--space-2xs); font: var(--text-sm) / 1.35 var(--font-body); max-width: 16rem; }
 .legend-row { display: flex; align-items: center; gap: var(--space-xs); }
-.swatch { width: 1rem; height: 0.75rem; flex: none; border: 2px solid var(--swatch); background: color-mix(in oklch, var(--swatch) 18%, transparent); border-radius: 2px; }
+.swatch { width: 1.25rem; height: 0.875rem; flex: none; border: 2px solid #C9861A; background: #F4B7401F; border-radius: 2px; }
 .swatch.is-dashed { border-style: dashed; }
-.radar-scale { width: 3rem; height: 0.6rem; flex: none; border-radius: 2px; background: linear-gradient(90deg, #04e9e7, #01c501, #fdf802, #fd9500, #fd0000, #bc0000); }
-.temp-label { font: 700 0.8125rem/1 var(--font-body); color: var(--color-ink); background: oklch(from var(--color-paper-raised) l c h / 0.88); padding: 2px 5px; border-radius: 4px; white-space: nowrap; box-shadow: 0 1px 3px var(--color-shadow); }
+.radar-scale { width: 3rem; height: 0.6rem; flex: none; border-radius: 999px; background: linear-gradient(90deg, #04E9E7, #01C501, #FDF802, #FD9500, #FD0000); }  /* NWS reflectivity colours */
 .map-tip { display: grid; gap: 2px; font-family: var(--font-body); }
 .map-tip-hazard { font-weight: 700; }
 
 /* Unit rows: quiet homes are compact so the ones that need someone get the room. */
 .unit { padding: var(--space-md) var(--space-xl); border-bottom: var(--rule-hair); display: grid; gap: var(--space-2xs); }
 .unit > p { font-size: var(--text-sm); }
-.unit.is-out, .unit.is-acked { padding-block: var(--space-lg); gap: var(--space-xs); }
-.unit.is-out > p, .unit.is-acked > p { font-size: var(--text-base); }
-.unit.is-out { background: var(--color-out-wash); box-shadow: inset 8px 0 0 var(--color-out); }
-.unit.is-acked { background: var(--color-acked-wash); box-shadow: inset 8px 0 0 var(--color-acked); }
+
 .unit-head { display: flex; align-items: center; gap: var(--space-sm); }
 .unit-head h2 { font-size: var(--text-lg); }
 .unit.is-out .unit-head h2, .unit.is-acked .unit-head h2 { font-size: var(--text-xl); }
@@ -168,7 +184,6 @@ select.input { padding-right: var(--space-lg); }
 .unit-backup strong { font-size: 3.25rem; line-height: 1; font-weight: 800; letter-spacing: -0.02em; font-variant-numeric: tabular-nums; color: var(--color-out); }
 .is-acked .unit-backup strong { color: var(--color-ink); }
 .unit .btn { justify-self: start; margin-top: var(--space-xs); }
-.unit .btn-respond { min-height: 48px; padding-inline: var(--space-xl); font-size: var(--text-base); }
 
 /* pages: patients, history, units */
 .page { max-width: 72rem; margin: 0 auto; padding: var(--space-2xl) var(--space-xl); }
@@ -242,10 +257,6 @@ select.input { padding-right: var(--space-lg); }
 .storm-banner { padding: var(--space-md) var(--space-xl) var(--space-lg); background: var(--color-acked-wash); border-bottom: var(--rule-hair); box-shadow: inset 8px 0 0 var(--color-acked); display: grid; gap: var(--space-sm); }
 .storm-banner h2 { font-size: var(--text-sm); font-weight: 800; letter-spacing: 0.04em; text-transform: uppercase; color: oklch(from var(--color-acked) calc(l - 0.3) c h); display: flex; align-items: center; gap: var(--space-xs); }
 .storm-banner h2::before { content: ""; width: 0.75rem; height: 0.75rem; border-radius: 50%; background: var(--color-acked); }
-.storm-banner ul { margin: 0; padding: 0; list-style: none; display: grid; gap: var(--space-xs); color: var(--color-ink-muted); font-size: var(--text-sm); }
-.storm-banner li strong { display: block; font-size: var(--text-lg); color: var(--color-ink); line-height: var(--leading-tight); }
-.storm-banner li.is-elevated strong { font-size: var(--text-base); }
-.storm-banner > p.muted { font-size: var(--text-sm); }
 /* The one thing to do about the storm, set apart from the description of it. */
 .call-first { margin: 0; padding: var(--space-sm) var(--space-md); border-radius: var(--radius-sm); background: var(--color-paper-raised); border: 1px solid oklch(from var(--color-acked) l c h / 0.45); }
 
@@ -323,16 +334,6 @@ fieldset > .btn { justify-self: start; }
 .family .btn { width: 100%; min-height: 56px; font-size: var(--text-lg); }
 .storm-note { border-radius: var(--radius-md); padding: var(--space-lg); background: var(--color-acked-wash); display: grid; gap: var(--space-xs); }
 .storm-note h2 { font-size: var(--text-lg); }
-.county .family-brand { margin-bottom: var(--space-lg); }
-.county .family-brand .push { margin-left: auto; }
-.county-status { display: flex; align-items: baseline; gap: var(--space-xs); }
-.county-status .state-dot { transform: translateY(0.1rem); }
-.county tbody tr:has(.county-status.is-out) { background: var(--color-out-wash); box-shadow: inset 6px 0 0 var(--color-out); }
-.county tbody tr:has(.county-status.is-acked) { background: var(--color-acked-wash); box-shadow: inset 6px 0 0 var(--color-acked); }
-/* On a washed row the pale tags vanish into the wash: give them solid ground. */
-.county .is-out .tag-out { background: var(--color-out); color: var(--color-on-ink); }
-.county tbody tr:has(.county-status.is-out, .county-status.is-acked) .tag-storm,
-.unit.is-acked .tag-storm, .unit.is-out .tag-storm { background: var(--color-paper-raised); }
 
 /* Escalations, shared by board rows and county cells. Still the alarm colour (power is out and it's getting worse),
    but stronger than a plain outage: "No answer" is a solid red block, "Backup almost out" a red-ruled box that stays
@@ -458,10 +459,9 @@ fieldset > .btn { justify-self: start; }
 .backup-clock { --left: 1; display: grid; grid-template-columns: auto 1fr; align-items: end; column-gap: var(--space-md); row-gap: var(--space-2xs); margin-block: var(--space-xs); }
 .backup-clock-label { grid-column: 1 / -1; font-size: var(--text-sm); font-weight: 700; color: var(--color-ink-muted); }
 .backup-clock-value { font-size: 3.25rem; line-height: 1; font-weight: 800; letter-spacing: -0.02em; color: var(--color-ink); }
-.backup-clock.is-urgent .backup-clock-value, .backup-clock.is-empty .backup-clock-value { color: var(--color-out); }
+
 .backup-bar { align-self: center; height: 0.75rem; border-radius: 999px; background: var(--color-paper-sunk); overflow: hidden; }
-.backup-bar > span { display: block; height: 100%; width: 100%; background: var(--color-on); transform: scaleX(var(--left)); transform-origin: left; transition: transform 1s linear; }
-.backup-clock.is-urgent .backup-bar > span { background: var(--color-out); }
+.backup-bar > span { display: block; height: 100%; width: 100%; background: var(--color-ink); transform: scaleX(var(--left)); transform-origin: left; transition: transform 1s linear; }
 .backup-clock-note { grid-column: 1 / -1; font-size: var(--text-sm); color: var(--color-ink-muted); }
 p.backup-clock.is-empty { display: block; color: var(--color-out); }
 
@@ -503,57 +503,23 @@ p.backup-clock.is-empty { display: block; color: var(--color-out); }
 .chip.is-storm { background: var(--color-acked-wash); color: var(--color-ink); }
 .chip.is-quiet { background: var(--color-quiet-wash); color: var(--color-ink); }
 .headline:not(.is-alarm) .chip.is-alarm { background: var(--color-out); color: var(--color-on-ink); }
-.sound-toggle.is-unarmed { border-color: var(--color-out); color: var(--color-out); }
+/* Sound off is only a problem while someone is in trouble. */
+body.has-outage .sound-toggle.is-unarmed { border-color: var(--color-out); color: var(--color-out); }
 .call-first ol { margin: var(--space-2xs) 0 0; padding-left: var(--space-lg); display: grid; gap: var(--space-xs); }
 .call-first li { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-xs) var(--space-sm); }
 .call-first li .btn { margin: 0; text-decoration: none; }
 
-/* ---- triage mode: a ranked line per home when many need someone at once -------------- */
-#units.is-triage > .triage-row { padding: 0; gap: 0; }
-.triage-line { display: grid; grid-template-columns: 2rem minmax(0, 1fr) auto; grid-template-areas: "rank who clock" "rank meta action"; align-items: center; gap: var(--space-2xs) var(--space-sm); padding: var(--space-sm) var(--space-md) var(--space-sm) var(--space-lg); }
-.triage-line > .rank-badge { grid-area: rank; align-self: start; margin-top: 2px; }
-.triage-line > .triage-who { grid-area: who; }
-.triage-line > .row-clock { grid-area: clock; justify-self: end; }
-.triage-line > .triage-meta { grid-area: meta; margin: 0; font-size: var(--text-sm); color: var(--color-ink-muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.triage-line > .btn, .triage-line > a.btn { grid-area: action; justify-self: end; margin: 0; min-height: 40px; padding-inline: var(--space-md); font-size: var(--text-sm); text-decoration: none; }
-.triage-who { all: unset; cursor: pointer; display: flex; align-items: baseline; gap: var(--space-xs); min-width: 0; border-radius: var(--radius-sm); }
-.triage-who:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }
-.triage-who strong { font-size: var(--text-lg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.triage-chevron { color: var(--color-ink-muted); font-size: var(--text-sm); }
-.triage-meta .triage-status { margin-right: var(--space-2xs); }
-.rank-badge { width: 1.75rem; height: 1.75rem; border-radius: 50%; display: grid; place-items: center; font: 800 var(--text-sm) / 1 var(--font-body); background: var(--color-quiet); color: var(--color-on-ink); }
-.rank-badge.is-out { background: var(--color-out); }
-.rank-badge.is-acked { background: var(--color-acked); color: var(--color-ink); }
-.row-clock { font-weight: 800; font-size: var(--text-lg); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.row-clock.is-urgent { color: var(--color-out); }
-.row-clock.is-quiet { font-size: var(--text-sm); font-weight: 700; color: var(--color-ink-muted); }
-.triage-status { font: 700 var(--text-sm) / 1 var(--font-body); padding: var(--space-2xs) var(--space-sm); border-radius: 999px; white-space: nowrap; }
-.triage-status.is-out { background: var(--color-out); color: var(--color-on-ink); }
-.triage-status.is-acked { background: var(--color-acked); color: var(--color-ink); }
-.triage-status.is-quiet { background: var(--color-quiet-wash); color: var(--color-ink); }
-.triage-row > .action-card.is-expanded { padding: 0 var(--space-md) var(--space-lg) var(--space-lg); background: none; box-shadow: none; border: 0; }
-.triage-row > .action-card.is-expanded > .unit-head { display: none; }
-.triage-row.is-open > .triage-line { border-bottom: var(--rule-hair); }
-
-/* Numbered pins on the map, matching the list. */
-.rank-pin-icon { background: none; border: 0; }
-.rank-pin { width: 26px; height: 26px; border-radius: 50%; display: grid; place-items: center; font: 800 13px / 1 var(--font-body); color: var(--color-on-ink); background: var(--color-quiet); border: 2px solid var(--color-on-ink); box-shadow: 0 1px 4px var(--color-shadow); }
-.rank-pin.is-out { background: var(--color-out); }
-.rank-pin.is-acked { background: var(--color-acked); color: var(--color-ink); }
-
-@media (max-width: 640px) {
-  .triage-line { grid-template-areas: "rank who clock" "rank meta meta" "rank action action"; }
-  .triage-line > .btn, .triage-line > a.btn { justify-self: stretch; }
-}
 /* In a storm, homes with power shrink to one line so the ranked list stays in view. */
 #units.is-triage > .unit:not(.triage-row) { padding-block: var(--space-xs); }
 #units.is-triage > .unit:not(.triage-row) > :not(.unit-head) { display: none; }
 
 /* ---- dispatch tools: town filter and the county welfare-check request ---------------- */
 .triage-tools { padding: var(--space-sm) var(--space-md) var(--space-sm) var(--space-lg); border-bottom: var(--rule-hair); display: grid; gap: var(--space-xs); background: var(--color-paper-raised); }
-.triage:has(.unit.is-out, .unit.is-acked) > .triage-tools { order: 1; }
+.triage:has(.action-card, .triage-row) > .triage-tools { order: 1; }
 .btn-county { justify-self: start; margin: 0; background: var(--color-paper-raised); color: var(--color-out); border: 2px solid var(--color-out); }
 .btn-county[data-confirm="yes"] { background: var(--color-out); color: var(--color-on-ink); }
+.btn-county:hover { background: var(--color-out-wash); }
+.btn-county[data-confirm="yes"]:hover, .btn-911:hover { background: oklch(from var(--color-out) calc(l + 0.06) c h); }
 .send-note { margin: 0; font-size: var(--text-sm); font-weight: 700; }
 .btn-911 { background: var(--color-out); color: var(--color-on-ink); text-decoration: none; font-weight: 800; }
 .escalation-note.is-critical { background: var(--color-out); color: var(--color-on-ink); padding: var(--space-sm) var(--space-md); border-radius: var(--radius-sm); font-weight: 700; }
@@ -582,8 +548,488 @@ p.backup-clock.is-empty { display: block; color: var(--color-out); }
 .live-status { display: inline-flex; align-items: center; gap: var(--space-xs); font-weight: 700; font-size: var(--text-sm); white-space: nowrap; }
 .live-status.is-out { color: var(--color-out); }
 @media (max-width: 640px) { .filter-bar.has-search, .page .filter-bar:not(.has-search) { grid-template-columns: 1fr 1fr; } .filter-search { grid-column: 1 / -1; } }
+/* The board column is narrow: search gets its own line, the three questions and Reset share the next. */
+#board-tools .filter-bar.has-search { grid-template-columns: repeat(3, minmax(0, 1fr)) auto; }
+#board-tools .filter-search { grid-column: 1 / -1; }
 
-/* County page: short status tags instead of repeated paragraphs. */
-.county-tags { display: flex; flex-wrap: wrap; gap: var(--space-2xs); margin-top: var(--space-2xs); }
-.county-tags .tag.is-critical { background: var(--color-out); color: var(--color-on-ink); }
-.county .list-tools { margin-top: var(--space-lg); }
+
+/* ======================================================================== */
+/* App v2: one shape and one word per state                                 */
+/* ======================================================================== */
+
+/* Glyphs are sized by font-size: 1em square. Chips, rank column, map pins and the legend all reuse them. */
+.glyph { position: relative; display: inline-grid; place-items: center; width: 1em; height: 1em; flex: none; border-radius: 50%; box-sizing: border-box; vertical-align: -0.15em; }
+.glyph.is-critical { background: var(--color-out); }
+.glyph.is-critical::after { content: "!"; color: #fff; font: 800 0.72em/1 var(--font-display); }
+.glyph.is-out { background: var(--color-out); }
+.glyph.is-unreached { border: 0.2em solid var(--color-out); background: #fff; }
+.glyph.is-responding { background: var(--color-acked); }
+.glyph.is-responding::after { content: ""; width: 0.22em; height: 0.42em; margin-top: -0.08em; border: solid var(--color-ink); border-width: 0 0.1em 0.1em 0; transform: rotate(45deg); }
+.glyph.is-silent { border: 0.12em dashed var(--color-quiet); background: #fff; }
+.glyph.is-on { width: 0.55em; height: 0.55em; border: 0.14em solid var(--color-on); background: #fff; }
+
+.chip-state { display: inline-flex; align-items: center; gap: 0.375rem; padding: 0.125rem 0.5rem 0.125rem 0.375rem; border-radius: 6px; font: 700 0.875rem/1.35 var(--font-body); white-space: nowrap; border: 1px solid transparent; }
+.chip-state.is-critical { background: var(--color-out); color: #fff; }
+.chip-state.is-critical .glyph { background: #fff; }
+.chip-state.is-critical .glyph::after { color: var(--color-out); }
+.chip-state.is-out, .chip-state.is-unreached { background: var(--color-out-wash); border-color: var(--color-out-line); color: var(--color-out-ink); }
+.chip-state.is-responding { background: #C9891C1F; border-color: #C9891C55; color: var(--color-acked-ink); }
+.chip-state.is-silent { background: var(--color-quiet-wash); border-color: #7A8A9355; color: var(--color-ink-muted); }
+.chip-state.is-on { background: #3FA37A1F; border-color: #3FA37A55; color: var(--color-on-text); }
+.synthetic { font-size: 0.75rem; font-weight: 400; color: var(--color-ink-muted); }
+
+/* ---- top bar ------------------------------------------------------------------ */
+.topbar { min-height: 64px; padding-block: 0.5rem; }
+.wordmark { font-family: var(--font-display); font-size: 1.375rem; }
+.wordmark svg { color: var(--color-out); }
+.views a { font-weight: 400; }
+.views a[aria-current="page"] { font-weight: 700; background: var(--color-paper-sunk); }
+.account-toggle { display: none; }
+@media (min-width: 641px) {
+  .who { display: contents; }
+  .who #who { margin-left: auto; color: var(--color-ink-muted); }
+  .topbar > .sound-toggle { order: 2; }
+  .who .btn { order: 3; }
+  .who .btn, .topbar > .sound-toggle { border-color: transparent; }
+}
+.tag#role { background: var(--color-paper-sunk); padding: 0.125rem 0.5rem; }
+
+/* ---- the board ------------------------------------------------------------------ */
+.board { grid-template-columns: minmax(0, 40rem) minmax(0, 1fr); height: calc(100dvh - 64px); }
+.triage { background: var(--color-paper); }
+.unit { position: relative; }
+
+/* Headline band: red while anyone waits, amber when every outage has someone, paper when calm. */
+.headline { padding: 1.125rem 1.75rem 1rem; display: grid; gap: 0.75rem; }
+.headline-title { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; flex-wrap: wrap; }
+.headline h1 { font: 700 clamp(2rem, 1.2rem + 1.8vw, 2.75rem)/1.05 var(--font-display); letter-spacing: -0.02em; }
+.headline .headline-sub { margin: 0; font-size: 1rem; color: var(--color-ink-muted); }
+.headline.is-alarm .headline-sub { color: #fff; }
+.live { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.8125rem; white-space: nowrap; color: var(--color-ink-muted); font-variant-numeric: tabular-nums; }
+.live-dot { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: currentColor; }
+.headline.is-alarm .live { color: #FFFFFFCC; }
+.headline .live.is-stale, .live.is-stale { padding: 0.25rem 0.625rem; border-radius: 6px; background: #EEF1F0; color: var(--color-ink-muted); font-weight: 700; box-shadow: inset 0 0 0 1px var(--color-rule); }
+.live.is-stale .live-dot { background: var(--color-quiet); }
+/* A frozen screen must never look live: the counts dim with the indicator. */
+.headline.is-stale .count-grid, .headline.is-stale .situation { opacity: 0.5; }
+.headline.is-stale { filter: saturate(0.6); }
+
+.count-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); border: 1px solid #FFFFFF66; border-radius: 10px; overflow: hidden; }
+.count-cell { all: unset; box-sizing: border-box; display: grid; gap: 0.125rem; padding: 0.5rem 1.25rem 0.625rem; color: #fff; cursor: pointer; border-right: 1px solid #FFFFFF66; border-bottom: 1px solid #FFFFFF66; }
+.count-cell:nth-child(3n) { border-right: 0; }
+.count-cell:nth-child(n+4) { border-bottom: 0; }
+.count-cell:hover:not(:disabled) { background: #FFFFFF1A; }
+.count-cell:focus-visible { outline: 3px solid #fff; outline-offset: -3px; }
+.count-cell:disabled { cursor: default; }
+.count-number { display: flex; align-items: center; gap: 0.5rem; font: 800 2.75rem/1 var(--font-display); font-variant-numeric: tabular-nums; }
+.count-number .glyph { font-size: 1.75rem; }
+.count-label { font-size: 0.875rem; color: #FFFFFFE6; }
+.count-cell.is-critical { background: #fff; color: var(--color-out); }
+.count-cell.is-critical .count-label { color: var(--color-out); font-weight: 700; }
+.count-cell.is-critical:hover:not(:disabled) { background: #fff; box-shadow: inset 0 0 0 2px var(--color-out); }
+.headline.is-handled .count-grid { border-color: var(--color-rule); }
+.headline.is-handled .count-cell { color: var(--color-ink); border-color: var(--color-rule); }
+.headline.is-handled .count-label { color: var(--color-ink-muted); }
+
+.county-send { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 1rem; }
+.btn-county { min-height: 44px; background: #fff; color: var(--color-out); border: 0; font-size: 0.875rem; }
+.btn-county::before { content: ""; width: 1rem; height: 1rem; background: currentColor; clip-path: polygon(0 45%, 100% 0, 60% 100%, 48% 58%); }
+.btn-county:hover { background: #FFF1F0; }
+.btn-county[data-confirm="yes"] { background: var(--color-ink); color: #fff; }
+.county-hint, .headline .send-note { margin: 0; font-size: 0.8125rem; color: #FFFFFFCC; }
+.headline:not(.is-alarm) .county-hint, .headline:not(.is-alarm) .send-note { color: var(--color-ink-muted); }
+.headline:not(.is-alarm) .btn-county { box-shadow: inset 0 0 0 2px var(--color-out); }
+
+/* Calm board chips */
+.situation { margin: 0; }
+.chip { min-height: 36px; background: #fff; box-shadow: inset 0 0 0 1px var(--color-rule); }
+.chip.is-storm { background: var(--color-acked-wash); box-shadow: none; color: var(--color-acked-ink); }
+
+/* Filter toolbar: one compact pill per question, as on the design. */
+.triage-tools, #board-tools { padding: 0.75rem 1.75rem; background: var(--color-paper); border-bottom: 1px solid var(--color-rule); }
+:is(.triage, .list-tools) .filter-bar { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+:is(.triage, .list-tools) .filter-field { display: flex; align-items: center; gap: 0; background: #fff; border: 1px solid var(--color-rule); border-radius: 6px; padding-left: 0.75rem; }
+:is(.triage, .list-tools) .filter-field label { font-size: 0.8125rem; font-weight: 400; }
+:is(.triage, .list-tools) .filter-field label::after { content: ":"; }
+:is(.triage, .list-tools) .filter-field select { border: 0; min-height: 36px; background-color: transparent; font-size: 0.8125rem; padding-left: 0.25rem; width: auto; max-width: 9.5rem; }
+:is(.triage, .list-tools) .filter-search { flex: 1 1 100%; }
+:is(.triage, .list-tools) .filter-search input { border: 0; }
+:is(.triage, .list-tools) .filter-reset { background: transparent; color: var(--color-ink-muted); border: 0; font-weight: 400; font-size: 0.8125rem; min-height: 36px; }
+:is(.triage, .list-tools) .filter-reset:disabled { opacity: 0.6; }
+
+/* ---- ranked list: one line per home ---------------------------------------------- */
+#units.is-triage > .triage-row { padding: 0; gap: 0; border-bottom: 1px solid var(--color-rule); }
+.triage-line { display: grid; grid-template-columns: 2rem minmax(0, 1fr) auto auto; align-items: center; gap: 0.25rem 1.25rem; padding: 0.875rem 1.75rem; }
+.rank { display: grid; justify-items: center; gap: 0.25rem; font-size: 1.25rem; }
+.rank-number { font: 700 0.75rem/1 var(--font-body); color: var(--color-ink-muted); }
+.triage-main { display: grid; gap: 0.25rem; min-width: 0; }
+.triage-who { all: unset; cursor: pointer; display: flex; align-items: baseline; gap: 0.375rem; min-width: 0; border-radius: 4px; }
+.triage-who:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }
+.triage-who .who-name { font-size: 1.0625rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.triage-chevron { color: var(--color-ink-muted); font-size: 0.75rem; }
+.triage-meta { display: flex; align-items: center; gap: 0.625rem; margin: 0; font-size: 0.8125rem; color: var(--color-ink-muted); min-width: 0; }
+.triage-meta > span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row-clock { display: grid; justify-items: end; text-align: right; }
+.row-clock .clock-value { font: 700 1.5rem/1.05 var(--font-display); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.row-clock .clock-label { font-size: 0.75rem; color: var(--color-ink-muted); white-space: nowrap; }
+.tone-ink .clock-value, .tone-ink .backup-clock-value { color: var(--color-ink); }
+.tone-amber .clock-value, .tone-amber .backup-clock-value { color: var(--color-acked-ink); }
+.tone-red .clock-value, .tone-red .backup-clock-value { color: var(--color-out); }
+.row-clock.is-quiet .clock-value { color: var(--color-ink); }
+.triage-line > .btn { min-height: 44px; min-width: 9.5rem; padding-inline: 1rem; font-size: 0.875rem; }
+/* Only rows under 15 minutes are tinted; red must keep meaning something on the fifteenth row. */
+.unit.is-critical { background: #D2392F0F; }
+
+/* ---- the action card ------------------------------------------------------------- */
+.action-card { gap: 0.875rem; padding: 1.25rem 1.75rem 1rem; background: #fff; border-bottom: 1px solid var(--color-rule); }
+#units:not(.is-triage) > .action-card { margin: 0.75rem; border: 1px solid var(--color-rule); border-radius: 14px; box-shadow: 0 8px 24px #16252F14; }
+#units:not(.is-triage) > .action-card.is-critical { border-color: #D2392F55; }
+.triage-row > .action-card.is-expanded { margin: 0 0.75rem 0.875rem; padding: 1rem 1.25rem; border: 1px solid var(--color-rule); border-radius: 14px; box-shadow: 0 8px 24px #16252F14; }
+.triage-row.is-critical > .action-card.is-expanded { border-color: #D2392F55; }
+.triage-row > .action-card.is-expanded > .card-head h2 { display: none; }
+.card-head { display: grid; gap: 0.375rem; }
+.card-head h2 { font-size: 1.25rem; }
+.card-head h2 .who-name { font-size: 1.25rem; }
+.card-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin: 0; font-size: 0.9375rem; color: var(--color-ink-muted); }
+.card-body { display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(0, 1fr); gap: 1rem 1.5rem; align-items: start; }
+.card-facts { display: grid; gap: 0.625rem; }
+.card-note { margin: 0; }
+.hazard-chip { margin: 0; padding: 0.5rem 0.75rem; border-radius: 6px; background: #F4B7401F; font-size: 0.875rem; }
+
+.backup-clock { --left: 1; display: grid; gap: 0.375rem; margin: 0; grid-template-columns: none; }
+.backup-clock-label { font: 700 0.75rem/1 var(--font-body); letter-spacing: 0.08em; text-transform: uppercase; color: var(--color-ink-muted); }
+.backup-clock-value { font: 800 clamp(2.75rem, 2rem + 2.4vw, 4.25rem)/1 var(--font-display); letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
+.backup-bar { height: 0.5rem; border-radius: 999px; background: var(--color-paper-sunk); overflow: hidden; }
+.tone-amber .backup-bar > span { background: var(--color-acked-deep); }
+.tone-red .backup-bar > span { background: var(--color-out); }
+.backup-clock-note { font-size: 0.9375rem; font-weight: 700; color: var(--color-ink); }
+
+.incident-steps { gap: 0.5rem; }
+.incident-steps .step { padding-left: 1.75rem; font-size: 0.9375rem; color: var(--color-ink-muted); }
+.incident-steps .step strong { color: var(--color-ink); }
+.incident-steps .step::before { left: 0.125rem; top: 0.2em; width: 1rem; height: 1rem; border-radius: 50%; background: none; border: 1.5px solid var(--color-ink-muted); box-sizing: border-box; }
+.incident-steps .step.is-out::before { border-color: var(--color-out); background: linear-gradient(135deg, transparent 45%, var(--color-out) 45% 55%, transparent 55%); }
+.incident-steps .step.is-next::before { border: 2px solid var(--color-ink); }
+.incident-steps .step.is-claimed::before { background: var(--color-acked); border-color: var(--color-acked); }
+.incident-steps .step.is-told::before { background: var(--color-out); border-color: var(--color-out); }
+
+.card-primary { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 0.75rem; }
+.card-primary .btn { min-height: 48px; font-size: 1rem; margin: 0; justify-self: stretch; }
+.card-primary:empty { display: none; }
+.btn .icon, .link-action .icon { width: 1.125rem; height: 1.125rem; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.btn-911 { background: var(--color-out); color: #fff; }
+.btn-respond { background: var(--color-acked); color: var(--color-ink); }
+.btn-call { background: var(--color-ink); color: #fff; }
+.card-links { display: flex; flex-wrap: wrap; gap: 0 1.25rem; }
+.link-action { all: unset; box-sizing: border-box; display: inline-flex; align-items: center; gap: 0.375rem; min-height: 44px; font-weight: 700; font-size: 0.9375rem; color: var(--color-ink); cursor: pointer; text-decoration: none; }
+.link-action:hover { text-decoration: underline; text-underline-offset: 3px; }
+.link-action:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; border-radius: 4px; }
+.link-action[aria-expanded="true"] { color: var(--color-out-ink); }
+.card-extra { padding: 0.75rem 1rem; border-radius: 10px; background: var(--color-paper); font-size: 0.9375rem; display: grid; gap: 0.375rem; }
+.card-extra ol { margin: 0; padding-left: 1.25rem; display: grid; gap: 0.25rem; }
+
+/* ---- calm rows: homes with power ------------------------------------------------------ */
+.home-row { display: block; padding: 0; }
+.home-heading { margin: 0; font: inherit; }
+.home-select { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 0.125rem 1rem; width: 100%;
+  padding: 0.75rem 1.75rem; border: 0; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-out); }
+.home-select:hover { background: var(--color-paper-sunk); }
+.home-select:focus-visible { outline: 2px solid var(--color-ink); outline-offset: -2px; }
+.home-row.is-open .home-select { background: var(--color-paper-sunk); }
+.home-main { display: grid; gap: 0.125rem; min-width: 0; }
+.home-name { display: flex; align-items: baseline; flex-wrap: wrap; gap: 0.25rem 0.5rem; font-size: 1rem; font-weight: 700; }
+.home-row .tag-storm { align-self: center; font-size: 0.75rem; padding: 0.0625rem 0.375rem; }
+.home-meta { margin: 0; font-size: 0.8125rem; color: var(--color-ink-muted); }
+.home-state { display: inline-flex; align-items: center; gap: 0.375rem; margin: 0; font-size: 0.875rem; font-weight: 700; color: var(--color-on-text); }
+.home-row.is-silent .home-state { color: var(--color-ink-muted); }
+.home-details { border-top: var(--rule-hair); background: var(--color-paper-raised); }
+.home-details .panel-body { padding: 0.75rem 1.75rem; gap: 0.5rem; }
+#units.is-triage > .home-row .home-select { padding-block: 0.5rem; }
+#units.is-triage > .home-row .home-meta { display: none; }
+.tag-storm { background: var(--color-acked-wash); color: var(--color-acked-ink); }
+
+/* ---- storm watch banner -------------------------------------------------------------- */
+.storm-banner { padding: 1.25rem 1.75rem 1.5rem; background: #F4B74033; box-shadow: none; border-bottom: 1px solid var(--color-rule); gap: 0.75rem; }
+.storm-banner h2 { font: 700 1.5rem/1.1 var(--font-display); letter-spacing: -0.01em; text-transform: none; color: var(--color-ink); }
+.storm-banner h2::before { content: none; }
+.storm-line { margin: 0; font-size: 0.9375rem; }
+.storm-sent { margin: 0; font-size: 0.8125rem; color: var(--color-ink-muted); }
+.call-first { padding: 0.75rem 1rem; border-radius: 10px; background: #fff; border: 1px solid var(--color-rule); display: grid; gap: 0.5rem; }
+.call-first-head { display: flex; flex-wrap: wrap; gap: 0.25rem 0.75rem; align-items: baseline; margin: 0; font-size: 0.9375rem; }
+.call-first-head .muted { font-size: 0.8125rem; }
+.call-first ol { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; }
+.call-first li { display: grid; grid-template-columns: 1.25rem minmax(0, 1fr) auto; align-items: center; gap: 0.75rem; padding: 0.5rem 0; border-top: 1px solid var(--color-rule); }
+.call-first-index { font-weight: 700; color: var(--color-acked-ink); }
+.call-first-who p { margin: 0; font-size: 0.875rem; }
+.call-first .btn { min-height: 36px; font-size: 0.8125rem; }
+
+/* ---- map: shape pins and the legend's key --------------------------------------------- */
+.pin-icon { background: none; border: 0; }
+.pin { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 50%; background: #fff; box-shadow: 0 1px 4px #16252F40; font-size: 28px; cursor: pointer; }
+/* Powered homes: a white disc with a dark edge and shadow, so the green ring stands off any street map. */
+.pin.is-on { width: 24px; height: 24px; background: #fff; box-shadow: 0 0 0 2px var(--color-ink), 0 2px 5px #16252F66; font-size: 26px; }
+.pin.is-on .glyph.is-on { border-width: 0.18em; }
+/* A clicked warning area must not draw the browser's focus box around the whole polygon. */
+#map path.leaflet-interactive:focus:not(:focus-visible) { outline: none; }
+.pin.is-silent { font-size: 26px; }
+.is-focused .pin { box-shadow: 0 0 0 6px #D2392F22, 0 0 0 8px var(--color-out); }
+.is-focused .pin.is-on { box-shadow: 0 0 0 5px #16252F1A, 0 0 0 7px var(--color-ink); }  /* red means danger; a powered home is only selected */
+.map-legend { max-width: 22rem; padding: 0.75rem 0.875rem; gap: 0.375rem; border: 1px solid var(--color-rule); box-shadow: 0 2px 10px var(--color-shadow); }
+.legend-homes-title { margin-top: 0.25rem; padding-top: 0.5rem; border-top: 1px solid var(--color-rule); }
+.legend-homes { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: repeat(3, auto); gap: 0.25rem 1rem; font-size: 0.75rem; }
+.legend-homes li { display: flex; align-items: center; gap: 0.375rem; white-space: nowrap; }
+.legend-homes .glyph { font-size: 1.125rem; }
+.legend-homes .glyph.is-on { font-size: 1rem; }
+
+/* ---- motion: only to say "this changed" ----------------------------------------------- */
+.btn { transition: background-color 120ms var(--ease-out), transform 120ms var(--ease-out); }
+.btn:active { transform: scale(0.98); }
+.unit.is-new-red::after { content: ""; position: absolute; inset: 0; background: var(--color-out); opacity: 0; pointer-events: none; animation: new-red 900ms var(--ease-out) 1; }
+.unit.is-new-red .rank .glyph, .unit.is-new-red .card-meta .glyph { animation: pulse-once 900ms var(--ease-out) 1; }
+@keyframes new-red { from { opacity: 0.22; } to { opacity: 0; } }
+@keyframes pulse-once { 0% { box-shadow: 0 0 0 0 #D2392F88; } 100% { box-shadow: 0 0 0 0.6em #D2392F00; } }
+
+/* ---- phones ----------------------------------------------------------------------------- */
+@media (max-width: 640px) {
+  .topbar { display: grid; grid-template-columns: 1fr auto auto; align-items: center; }
+  .topbar .views { grid-column: 1 / -1; grid-row: 2; }
+  .account-toggle { display: inline-flex; }
+  .account-toggle[aria-expanded="true"] { background: var(--color-paper-sunk); }
+  .who { display: none; grid-column: 1 / -1; width: 100%; padding: 0.5rem 0; border-top: 1px solid var(--color-rule); }
+  .who.is-open { display: flex; }
+  .headline, .unit, .storm-banner, .triage-tools, #board-tools { padding-left: 1rem; padding-right: 1rem; }
+  .triage-line { grid-template-columns: 1.75rem minmax(0, 1fr) auto; padding: 0.75rem 1rem; }
+  .triage-line > .btn { grid-column: 2 / -1; justify-self: stretch; }
+  .count-cell { padding: 0.5rem 0.75rem; }
+  .count-number { font-size: 2rem; }
+  .count-label { font-size: 0.8125rem; }
+  .card-body { grid-template-columns: minmax(0, 1fr); }
+  .card-primary { grid-auto-flow: row; }
+  .legend-homes { grid-template-columns: repeat(2, auto); }
+}
+
+/* ---- county emergency management ------------------------------------------------------- */
+.wordmark-sub { font: 400 1rem var(--font-body); color: var(--color-ink-muted); margin-left: 0.375rem; letter-spacing: 0; }
+.page.county { max-width: 90rem; padding-top: 2.5rem; }
+.county-head { display: flex; justify-content: space-between; align-items: end; gap: 1.5rem 3rem; flex-wrap: wrap; margin-bottom: 1.75rem; }
+.county-head h1 { font: 700 clamp(2.25rem, 1.4rem + 2.6vw, 4rem)/1.05 var(--font-display); letter-spacing: -0.025em; }
+.county-head h1.is-alarm { color: var(--color-out); }
+.county-head p { max-width: 62ch; margin-top: 0.75rem; font-size: 1.0625rem; }
+.county-counts { display: flex; gap: 2.5rem; margin: 0; }
+.county-counts > div { display: flex; flex-direction: column-reverse; gap: 0.25rem; }
+.county-counts dd { margin: 0; font: 700 2.75rem/1 var(--font-display); font-variant-numeric: tabular-nums; }
+.county-counts dt { font-size: 0.875rem; color: var(--color-ink-muted); }
+.county-counts .is-red dd { color: var(--color-out); }
+.county-counts .is-amber dd { color: var(--color-acked-ink); }
+.county-storm { display: flex; gap: 0.875rem; padding: 1rem 1.25rem; margin-bottom: 1.5rem; border-radius: 10px; background: #F4B74033; border: 1.5px solid var(--color-storm); font-size: 1.0625rem; }
+.county-storm p { margin: 0; }
+.county .list-tools { background: transparent; border: 0; padding: 0; margin: 0 0 1.25rem; }
+.county-table { background: #fff; border: 1px solid var(--color-rule); border-radius: 12px; border-collapse: separate !important; border-spacing: 0; overflow: hidden; }
+.county-table thead th { background: var(--color-paper); font-size: 0.8125rem; letter-spacing: 0.08em; text-transform: uppercase; padding: 1rem 1rem; border-bottom: 1px solid var(--color-rule); }
+.county-table td { padding: 1rem; vertical-align: middle; border-bottom: 1px solid var(--color-rule); }
+.county-table tbody tr:hover { background: inherit; }
+.county-table tr.is-critical { background: #D2392F0F; }
+.county-table tr.is-critical .county-rank { color: var(--color-out); }
+.county-rank { font-weight: 700; color: var(--color-ink-muted); width: 3rem; }
+.county-status { display: flex; align-items: center; flex-wrap: wrap; gap: 0.375rem 0.875rem; }
+.county-status .muted { font-size: 0.9375rem; }
+.county-backup { font: 700 1.625rem/1 var(--font-display); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.county-backup.tone-ink { color: var(--color-ink); }
+.county-backup.tone-amber { color: var(--color-acked-ink); }
+.county-backup.tone-red { color: var(--color-out); }
+.county-backup.is-unknown { color: var(--color-ink-muted); }
+.county-table td.num { text-align: right; }
+.nobody.is-critical { color: var(--color-out-ink); }
+.county-fold { all: unset; display: inline-flex; align-items: center; gap: 0.625rem; min-height: 44px; cursor: pointer; font-size: 1rem; }
+.county-fold:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; border-radius: 4px; }
+.fold-chevron { color: var(--color-ink-muted); width: 1rem; }
+.county-fold-row td { padding-block: 0.25rem; }
+.county-updated { color: var(--color-ink-muted); margin: 1.25rem 0 1.5rem; }
+.county-updated.is-stale { display: inline-block; padding: 0.375rem 0.75rem; border-radius: 6px; background: #EEF1F0; font-weight: 700; box-shadow: inset 0 0 0 1px var(--color-rule); }
+@media (max-width: 640px) {
+  .county-counts { gap: 1.25rem; }
+  .county-counts dd { font-size: 2rem; }
+  .county-table { border: 0; background: transparent; }
+  .county-table td { border: 0; padding: 0.25rem 0.5rem; }
+  .county .stack-table td[data-label="#"] { display: none; }
+  .county .stack-table td[data-label="Status"] { grid-column: 1 / -1; }
+  .county-fold-row { display: block !important; }
+}
+.triage-line > .btn { margin: 0; }
+
+/* ---- family status page: one card says what is happening, the next says what to do -------- */
+.family { gap: 1.5rem; padding-top: 1.5rem; }
+.family-brand { font-family: var(--font-display); font-size: 1.125rem; }
+.family h1 { font: 700 clamp(1.75rem, 1.4rem + 1.6vw, 2.25rem)/1.1 var(--font-display); letter-spacing: -0.02em; }
+#status { gap: 1.5rem; }
+.status-card { border-radius: 14px; overflow: hidden; background: #fff; border: 1px solid var(--color-rule); box-shadow: 0 8px 24px #16252F0F; }
+.status-card.is-out { border-color: #D2392F33; }
+.status-band { padding: 1.25rem 1.25rem 1.125rem; display: grid; gap: 0.375rem; background: var(--color-paper-sunk); }
+.status-band h2 { display: flex; align-items: center; gap: 0.5rem; font: 700 clamp(1.875rem, 1.5rem + 1.8vw, 2.5rem)/1.05 var(--font-display); letter-spacing: -0.02em; }
+.status-band h2 .icon { width: 2rem; height: 2rem; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.status-band p { margin: 0; font-size: 1rem; }
+.status-card.is-out .status-band { background: var(--color-out); color: #fff; }
+.status-card.is-on .status-band { background: #3FA37A1F; color: var(--color-on-text); }
+.status-card.is-quiet .status-band { background: var(--color-quiet-wash); color: var(--color-ink); }
+.status-body { padding: 1.25rem 1.25rem 1.5rem; display: grid; gap: 0.5rem; }
+.status-body > p.muted { margin: 0; }
+.family-backup { margin: 0; display: flex; align-items: baseline; gap: 0.25rem; }
+.family-backup .backup-clock-value { font-size: clamp(3rem, 2.4rem + 3vw, 4rem); }
+.left-word { font-size: 1.125rem; color: var(--color-ink-muted); }
+.card-911 { border: 2px solid var(--color-out); border-radius: 14px; padding: 1.25rem; display: grid; gap: 1rem; background: #fff; }
+.card-911 p { margin: 0; display: flex; gap: 0.75rem; align-items: start; font-size: 1.1875rem; font-weight: 700; line-height: 1.35; }
+.card-911 p .icon { width: 1.5rem; height: 1.5rem; flex: none; fill: none; stroke: var(--color-out); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; margin-top: 0.1rem; }
+.btn-huge { width: 100%; min-height: 56px; font-size: 1.25rem; border-radius: 10px; }
+.family .btn { width: 100%; min-height: 56px; font-size: 1.25rem; }
+.who-knows { display: grid; gap: 0.75rem; font-size: 1.0625rem; }
+.who-knows p { margin: 0; }
+.who-knows .incident-steps .step { font-size: 1rem; }
+.storm-note { display: flex; gap: 0.75rem; padding: 1.125rem 1.25rem; border-radius: 12px; background: #F4B74033; }
+.storm-note > .icon { width: 1.5rem; height: 1.5rem; flex: none; fill: none; stroke: var(--color-acked-ink); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.storm-note h2 { font: 700 1.125rem/1.2 var(--font-body); color: var(--color-ink); }
+.storm-note p { margin: 0.125rem 0 0; }
+.family .plan { background: transparent; border: 0; border-top: 1px solid var(--color-rule); border-bottom: 1px solid var(--color-rule); border-radius: 0; padding: 0.5rem 0; }
+.family .plan summary { min-height: 48px; display: flex; align-items: center; font-size: 1.125rem; }
+.family-foot { gap: 0.5rem; }
+.family-foot #updated.is-stale { display: inline-block; padding: 0.375rem 0.75rem; border-radius: 6px; background: #EEF1F0; font-weight: 700; color: var(--color-ink-muted); box-shadow: inset 0 0 0 1px var(--color-rule); }
+@media (max-width: 640px) { :is(.triage, .list-tools) .filter-field { flex: 1 1 calc(50% - 0.5rem); } :is(.triage, .list-tools) .filter-field select { max-width: none; flex: 1; } }
+.page-head h1 { font-family: var(--font-display); letter-spacing: -0.02em; }
+.unit.action-card.is-critical { background: #fff; }
+
+/* ======================================================================== */
+/* App v2: the list pages (patients, history, units, staff), panels, account, sign in */
+/* ======================================================================== */
+.page { max-width: 82rem; padding: 2.5rem 2rem 4rem; }
+.page-head { align-items: end; gap: 1rem 2rem; margin-bottom: 1.5rem; }
+.page-head h1 { font: 700 clamp(2rem, 1.4rem + 1.8vw, 2.75rem)/1.05 var(--font-display); letter-spacing: -0.02em; }
+.page-sub { margin: 0.5rem 0 0; color: var(--color-ink-muted); font-size: 1.0625rem; max-width: 62ch; }
+.page-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; }
+.page-actions .btn { min-height: 44px; }
+.btn-primary { background: var(--color-ink); color: #fff; min-height: 48px; padding-inline: 1.5rem; border-radius: 8px; }
+.page .btn-quiet { background: #fff; border-color: var(--color-rule); }
+.page .btn-quiet:hover { background: var(--color-paper-sunk); }
+.page-live { color: var(--color-ink-muted); }
+.page-live .live-dot { background: var(--color-on); }
+
+/* One toolbar style everywhere: pill selects, a search pill, a quiet Reset. */
+.list-tools { background: transparent; border: 0; padding: 0; margin: 0 0 1.25rem; }
+.list-tools .filter-search { flex: 2 1 18rem; }
+.list-tools .filter-field select { min-height: 44px; }
+.list-tools .filter-search input { min-height: 44px; }
+.list-tools .filter-chosen { margin-top: 0.5rem; }
+.pill-select { display: inline-flex; align-items: center; gap: 0.25rem; padding-left: 0.75rem; background: #fff; border: 1px solid var(--color-rule); border-radius: 6px; font-size: 0.875rem; }
+.pill-select select { border: 0; background: transparent; min-height: 44px; font: inherit; font-weight: 700; color: var(--color-ink); padding-right: 0.5rem; }
+.pill-select:focus-within { outline: 3px solid var(--color-focus); outline-offset: 2px; }
+
+/* Data tables: a white card on paper, quiet uppercase headings, tabular numbers. */
+.page table.data-table { width: 100%; background: #fff; border: 1px solid var(--color-rule); border-radius: 12px; border-collapse: separate; border-spacing: 0; overflow: hidden; }
+.data-table thead th { background: var(--color-paper); font-size: 0.75rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--color-ink-muted); padding: 0.875rem 1rem; border-bottom: 1px solid var(--color-rule); }
+.data-table td { padding: 0.875rem 1rem; vertical-align: middle; border-bottom: 1px solid var(--color-rule); }
+.data-table tbody tr:last-child td { border-bottom: 0; }
+.page .data-table tbody tr:hover { background: #F8FAF9; }
+.data-table .muted { font-size: 0.875rem; }
+.cell-name .who-name { font-weight: 700; }
+.cell-action { text-align: right; white-space: nowrap; }
+.count-pill { display: inline-grid; place-items: center; min-width: 1.5rem; height: 1.5rem; padding: 0 0.375rem; border-radius: 999px; background: var(--color-paper-sunk); font-weight: 700; font-size: 0.8125rem; font-variant-numeric: tabular-nums; }
+.acuity { display: inline-grid; place-items: center; min-width: 1.75rem; height: 1.75rem; border-radius: 6px; font-weight: 800; background: var(--color-paper-sunk); color: var(--color-ink); }
+.acuity-1 { background: var(--color-ink); color: #fff; }  /* most critical: weight, not the alarm colour */
+.battery-cell { display: inline-flex; align-items: center; gap: 0.5rem; }
+.battery { width: 2rem; height: 0.875rem; padding: 2px; border: 1.5px solid var(--color-ink-muted); border-radius: 3px; display: block; }
+.battery > span { display: block; height: 100%; background: var(--color-ink); border-radius: 1px; }
+.battery-cell.is-low { font-weight: 700; }
+.response-ok, .no-response { display: inline-flex; align-items: center; gap: 0.375rem; }
+.no-response { color: var(--color-out-ink); font-weight: 700; }
+.response-wait { font-weight: 700; }
+.data-table .tag-storm { padding: 0.125rem 0.5rem; }
+.bars span { background: var(--color-rule); }
+
+/* History: a sentence, four tiles, two charts, then the table. */
+.summary { margin: 0 0 1.25rem; font-size: 1.125rem; }
+.kpi { background: #fff; border: 1px solid var(--color-rule); border-radius: 12px; padding: 1rem 1.25rem 1.25rem; }
+.kpi-label { font-size: 0.875rem; }
+.kpi-value { font: 700 2.5rem/1.05 var(--font-display); font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+.kpi.is-alert { border-color: var(--color-out-line); box-shadow: inset 0 3px 0 var(--color-out); }
+.chart-card { background: #fff; border: 1px solid var(--color-rule); border-radius: 12px; padding: 1rem 1.25rem; }
+.chart-card h2 { font: 700 1.125rem/1.2 var(--font-display); }
+.chart-bar, .chart-dot { fill: var(--color-ink); }
+.chart-line { stroke: var(--color-ink); }
+.chart-target { stroke: var(--color-ink-muted); }
+
+/* Staff */
+.staff-add { max-width: none; background: #fff; border: 1px solid var(--color-rule); border-radius: 12px; padding: 1.25rem; grid-template-columns: minmax(14rem, 2fr) minmax(12rem, 1fr) auto; }
+.staff-add .card-title { grid-column: 1 / -1; font: 700 1.125rem/1.2 var(--font-display); }
+.role-guide { padding: 1rem 1.25rem; border-radius: 12px; background: var(--color-paper-sunk); }
+.data-table .input-small { min-height: 40px; width: auto; border-radius: 6px; }
+
+/* Fields */
+.input { min-height: 48px; border-radius: 8px; border-color: var(--color-rule-strong); }
+.input[aria-invalid="true"] { border-color: var(--color-out); box-shadow: 0 0 0 1px var(--color-out); }
+.field label { font-size: 0.9375rem; }
+.form-error { background: var(--color-out-wash); color: var(--color-out-ink); border: 1px solid var(--color-out-line); border-radius: 8px; }
+.form-success { background: #3FA37A1F; color: var(--color-on-text); border-radius: 8px; }
+
+/* Side panel: paper, white cards for each part, the actions always in reach. */
+dialog.panel { width: min(46rem, 100vw); background: var(--color-paper); }
+.panel-head { background: #fff; border-bottom: 1px solid var(--color-rule); }
+.panel-head h2 { font: 700 1.5rem/1.15 var(--font-display); letter-spacing: -0.01em; }
+.panel form { gap: 1.25rem; }
+.panel fieldset { background: #fff; border: 1px solid var(--color-rule); border-radius: 12px; padding: 1rem 1.25rem 1.25rem; }
+.panel legend { float: left; width: 100%; font: 700 1.125rem/1.2 var(--font-display); margin-bottom: 0.25rem; }
+.panel legend + * { clear: left; }
+.panel .panel-body { gap: 0.75rem; }
+.panel .panel-body h3 { font: 700 1.0625rem/1.2 var(--font-display); }
+.panel-actions { position: sticky; bottom: 0; z-index: 1; background: var(--color-paper); padding: 0.875rem 0; margin-top: 0.25rem; border-top: 1px solid var(--color-rule); }
+.panel-actions .btn { min-height: 48px; }
+.contacts { gap: 0.75rem; }
+.contact-row { grid-template-columns: 2rem minmax(0, 1fr) minmax(0, 1fr); grid-template-areas: "order name phone" "order role channel" "order tools tools";
+  padding: 0.75rem; border: 1px solid var(--color-rule); border-radius: 10px; background: var(--color-paper); }
+.contact-row > :nth-child(6) { grid-area: tools; }
+.contact-order { width: 1.75rem; height: 1.75rem; margin-top: 1.9rem; border-radius: 50%; background: var(--color-ink); color: #fff; font-size: 0.875rem; }
+.contact-tools { display: flex; flex-wrap: wrap; gap: 0 1.25rem; }
+.contact-tools .link-action { min-height: 40px; font-size: 0.875rem; }
+.link-action.is-danger { color: var(--color-out-ink); }
+.link-action:disabled { opacity: 0.4; cursor: default; text-decoration: none; }
+.credential { background: #fff; border: 1px solid var(--color-rule); }
+.timeline li { background: #fff; border: 1px solid var(--color-rule); }
+.facts dt { font-weight: 700; }
+.home-details .facts, .panel .facts { gap: 0.5rem 1.5rem; }
+
+/* Change password and sign in */
+.page.account { max-width: 32rem; padding-top: 3rem; }
+.account .family-brand { font-family: var(--font-display); font-size: 1.25rem; color: var(--color-ink); }
+.account .family-brand svg { color: var(--color-out); }
+.account-form { background: #fff; border: 1px solid var(--color-rule); border-radius: 14px; padding: 1.75rem; box-shadow: 0 8px 24px #16252F0F; }
+.account-form h1 { font: 700 2rem/1.1 var(--font-display); letter-spacing: -0.02em; }
+.account-form .panel-actions { position: static; background: transparent; }
+.signin-intro { background: #0C1821; color: #EEF3F1; align-content: space-between; }
+.signin-brand { display: flex; align-items: center; gap: 0.5rem; font: 700 1.375rem/1 var(--font-display); }
+.signin-brand svg { width: 1.375rem; height: 1.375rem; color: #F4B740; }
+.signin-intro h1 { font: 800 clamp(2.5rem, 1.6rem + 3vw, 4.25rem)/1.02 var(--font-display); letter-spacing: -0.03em; max-width: 13ch; }
+.signin-intro p { color: #9DB1BB; font-size: 1.125rem; }
+.signin form h2 { font: 700 1.75rem/1.1 var(--font-display); }
+.signin form .btn { min-height: 48px; }
+
+@media (max-width: 640px) {
+  .page { padding: 1.5rem 1rem 3rem; }
+  .page table.data-table { border: 0; background: transparent; border-radius: 0; overflow: visible; }
+  .data-table tbody tr { background: #fff; border: 1px solid var(--color-rule) !important; border-radius: 12px; margin-bottom: 0.75rem; padding: 0.5rem 0.25rem; }
+  .data-table td { border: 0; padding: 0.375rem 0.75rem; }
+  .data-table .cell-action { grid-column: 1 / -1; text-align: left; }
+  .staff-add { grid-template-columns: 1fr; }
+  .contact-row { grid-template-columns: 1.75rem minmax(0, 1fr); grid-template-areas: "order name" "order phone" "order role" "order channel" "order tools"; }
+  .page-actions { width: 100%; }
+}
+@media print { .page-live, .list-tools { display: none !important; } .page table.data-table { border: 0; } }
+.panel .form-error { scroll-margin-top: 6rem; }
+.cell-name { white-space: nowrap; }
+.btn-danger { border-color: var(--color-rule); color: var(--color-out-ink); background: #fff; }
+.btn-danger[data-confirm="yes"] { background: var(--color-out); border-color: var(--color-out); color: #fff; }
+@media (max-width: 640px) {
+  .data-table td[data-label="Patient"], .data-table td[data-label="Unit"]:first-child, .data-table td[data-label="Email"] { order: -1; grid-column: 1 / -1; }
+  .data-table td[data-label="Patient"]::before, .data-table td[data-label="Unit"]:first-child::before, .data-table td[data-label="Email"]::before { content: none; }
+  .list-tools .filter-field select { flex: 1; min-width: 0; max-width: none; }
+  .data-table td[data-label="Call list"] { grid-column: 1 / -1; }
+}
+.signin-intro .signin-brand { color: #EEF3F1; font-size: 1.375rem; }
+.signin-copy { display: grid; gap: 1rem; }

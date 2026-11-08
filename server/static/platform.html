@@ -7,7 +7,7 @@
 <title>Lifeline</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;700;800&family=Atkinson+Hyperlegible+Mono:wght@400&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700;12..96,800&family=Atkinson+Hyperlegible+Next:wght@400;700;800&family=Atkinson+Hyperlegible+Mono:wght@400&display=swap">
 <!-- Leaflet 1.9.4, served from here so the map can't fail separately from the page -->
 <link rel="stylesheet" href="/static/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=">
 <link rel="stylesheet" href="/static/app.css">
@@ -28,10 +28,11 @@
     <a href="#staff" data-view="staff" hidden>Staff</a>
     <a href="/county" id="county-link" hidden>County view</a>
   </nav>
-  <div class="who">
+  <button class="btn btn-quiet btn-small sound-toggle" id="sound-toggle" type="button" aria-pressed="false">Turn on sound</button>
+  <button class="btn btn-quiet btn-small account-toggle" id="account-toggle" type="button" aria-expanded="false" aria-controls="account-menu">Account</button>
+  <div class="who" id="account-menu">
     <span id="who"></span>
     <span class="tag" id="role"></span>
-    <button class="btn btn-quiet btn-small sound-toggle" id="sound-toggle" type="button" aria-pressed="false">Turn on sound</button>
     <a class="btn btn-quiet btn-small" href="/account">Change password</a>
     <button class="btn btn-quiet btn-small" id="signout" type="button">Sign out</button>
   </div>
@@ -42,8 +43,10 @@
     <div class="triage">
       <div class="headline" id="headline"><h1>Loading…</h1></div>
       <p class="visually-hidden" id="announce" aria-live="polite"></p>
+      <p class="visually-hidden" id="announce-alert" role="alert"></p>
       <div class="storm-banner" id="storm-banner" hidden></div>
       <div class="triage-tools" id="triage-tools" hidden></div>
+      <div class="triage-tools" id="board-tools" hidden></div>
       <div id="units"></div>
       <details class="attention" id="attention" hidden></details>
     </div>
@@ -54,9 +57,12 @@
     <div class="page-head">
       <div>
         <h1>Patients</h1>
-        <p class="muted">Each patient has one power unit at their outlet and a call list we alert in order.</p>
+        <p class="page-sub">Each patient has one power unit at their outlet and a call list we alert in order.</p>
       </div>
-      <button class="btn" id="add-patient" type="button" hidden>Add patient</button>
+      <div class="page-actions">
+        <p class="live page-live"><span class="live-dot" aria-hidden="true"></span><span class="live-text">Connecting</span></p>
+        <button class="btn btn-primary" id="add-patient" type="button" hidden>Add patient</button>
+      </div>
     </div>
     <div class="list-tools" id="roster-tools"></div>
     <div id="roster-body"></div>
@@ -66,11 +72,11 @@
     <div class="page-head">
       <div>
         <h1>Outage history</h1>
-        <p class="muted">Every power outage, silent unit and storm notice: who we alerted, and how fast someone responded.</p>
+        <p class="page-sub">Every power outage, silent unit and storm notice: who we alerted, and how fast someone responded.</p>
       </div>
       <div class="page-actions">
-        <label class="inline-field" for="history-days">Period
-          <select class="input" id="history-days">
+        <label class="pill-select" for="history-days"><span>Period:</span>
+          <select id="history-days">
             <option value="7">Last 7 days</option>
             <option value="30" selected>Last 30 days</option>
             <option value="90">Last 90 days</option>
@@ -92,8 +98,9 @@
     <div class="page-head">
       <div>
         <h1>Unit health</h1>
-        <p class="muted">Each power unit's connection, as of its last report. Units report every 30 seconds.</p>
+        <p class="page-sub">Each power unit's connection, as of its last report. Units report every 30 seconds.</p>
       </div>
+      <div class="page-actions"><p class="live page-live"><span class="live-dot" aria-hidden="true"></span><span class="live-text">Connecting</span></p></div>
     </div>
     <div class="list-tools" id="units-tools"></div>
     <div id="units-body"></div>
@@ -103,10 +110,11 @@
     <div class="page-head">
       <div>
         <h1>Staff and roles</h1>
-        <p class="muted">Who can sign in to Lifeline and what they can do. Adding someone makes their sign-in account and shows you a temporary password to pass on.</p>
+        <p class="page-sub">Who can sign in to Lifeline and what they can do. Adding someone makes their sign-in account and shows you a temporary password to pass on.</p>
       </div>
     </div>
     <form class="staff-add" id="staff-add" novalidate>
+      <h2 class="card-title">Give someone access</h2>
       <div class="field">
         <label for="staff-email">Work email</label>
         <input class="input" id="staff-email" name="email" type="email" autocomplete="off" required>
@@ -115,7 +123,7 @@
         <label for="staff-role">Role</label>
         <select class="input" id="staff-role" name="role"></select>
       </div>
-      <button class="btn" type="submit">Give access</button>
+      <button class="btn btn-primary" type="submit">Give access</button>
       <p class="form-error" id="staff-error" role="alert" hidden></p>
     </form>
     <dl class="role-guide">
@@ -131,7 +139,7 @@
 <dialog class="panel" id="panel" aria-labelledby="panel-title">
   <div class="panel-head">
     <h2 id="panel-title">Add patient</h2>
-    <button class="btn btn-quiet btn-small" type="button" data-close>Close</button>
+    <button class="btn btn-quiet btn-small panel-close" type="button" data-close>Close</button>
   </div>
   <div id="panel-content"></div>
 </dialog>

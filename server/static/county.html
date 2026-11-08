@@ -8,29 +8,39 @@
 <title>Lifeline: homes without power</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;700;800&family=Atkinson+Hyperlegible+Mono:wght@400&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700;12..96,800&family=Atkinson+Hyperlegible+Next:wght@400;700;800&family=Atkinson+Hyperlegible+Mono:wght@400&display=swap">
 <link rel="stylesheet" href="/static/app.css">
 <script type="module" src="/static/county.js"></script>
 </head>
 <body>
-<main class="page county">
-  <div class="family-brand">
+<header class="topbar">
+  <div class="wordmark">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12h4l2-5 4 10 2-5h8"/></svg>
-    Lifeline, for county emergency management
-    <a class="btn btn-quiet btn-small push" href="/account">Change password</a>
+    Lifeline <span class="wordmark-sub">for county emergency management</span>
+  </div>
+  <button class="btn btn-quiet btn-small account-toggle" id="account-toggle" type="button" aria-expanded="false" aria-controls="account-menu">Account</button>
+  <div class="who" id="account-menu">
+    <span id="who"></span>
+    <span class="tag" id="role">County</span>
+    <a class="btn btn-quiet btn-small" href="/account">Change password</a>
     <button class="btn btn-quiet btn-small" id="signout" type="button">Sign out</button>
   </div>
-  <div class="page-head">
+</header>
+<main class="page county">
+  <div class="county-head">
     <div>
       <h1 id="county-title">Loading…</h1>
-      <p class="muted">Patients who depend on powered medical equipment, most urgent first. Shared by their home health agency; read only. No phone numbers.</p>
+      <p class="muted">Patients who depend on powered medical equipment, most urgent first. Shared by their home health agency, read only. No phone numbers.</p>
     </div>
+    <dl class="county-counts" id="county-counts"></dl>
   </div>
   <p class="visually-hidden" id="announce" aria-live="polite"></p>
-  <div id="county-body"></div>
+  <p class="visually-hidden" id="announce-alert" role="alert"></p>
+  <div id="county-banner"></div>
   <div class="list-tools" id="county-tools"></div>
   <div id="county-table"></div>
-  <p class="muted" id="updated"></p>
+  <p class="county-updated" id="updated"></p>
+  <div id="county-body"></div>
 </main>
 </body>
 </html>

@@ -7,15 +7,18 @@
 <title>Lifeline: sign in</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible+Next:wght@400;700;800&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700;12..96,800&family=Atkinson+Hyperlegible+Next:wght@400;700;800&display=swap">
 <link rel="stylesheet" href="/static/app.css">
 <script type="module" src="/static/login.js"></script>
 </head>
 <body>
 <main class="signin">
   <section class="signin-intro">
+    <p class="signin-brand"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12h4l2-5 4 10 2-5h8"/></svg>Lifeline</p>
+    <div class="signin-copy">
     <h1>Know the moment a patient loses power.</h1>
     <p>Lifeline watches the outlets of patients who depend on oxygen, ventilators and other powered equipment, and tells their family and your on-call staff when the power goes out.</p>
+    </div>
   </section>
   <form id="signin" novalidate>
     <h2>Agency sign in</h2>
@@ -28,7 +31,8 @@
       <label for="password">Password</label>
       <input class="input" id="password" name="password" type="password" autocomplete="current-password" required>
     </div>
-    <button class="btn" type="submit">Sign in</button>
+    <button class="btn btn-primary" type="submit">Sign in</button>
+    <p class="muted">Staff accounts are made by your agency's Lifeline admin; there is no public sign-up. Forgot your password? Ask your admin for a new temporary one.</p>
   </form>
 </main>
 </body>
