@@ -12,6 +12,7 @@ Run:  python3 app.py   (see README for Supabase and Twilio settings)
 from __future__ import annotations
 
 import csv
+import gzip
 import hmac
 import io
 import json
@@ -20,6 +21,7 @@ import mimetypes
 import os
 import re
 import secrets
+import signal
 import threading
 import time
 import urllib.parse
@@ -63,6 +65,10 @@ SMS_REPLIES = {
     ReplyResult.NOTHING_OPEN: "No open Lifeline alert matches that reply. Reply OK and the 4-digit code from the alert.",
 }
 log = logging.getLogger("lifeline")
+
+# Text is compressed (Three.js alone drops from ~815 KB to ~200 KB); images are already compressed.
+COMPRESSIBLE = ("text/", "application/javascript", "application/json", "image/svg+xml")
+GZIP_MIN_BYTES = 1024
 
 SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
@@ -114,6 +120,10 @@ class Handler(BaseHTTPRequestHandler):
     geocoder: CensusGeocoder
     storm_mode: str = "off"            # on, off or demo; set by main()
     storm_check_seconds: int = 300
+    # Set only behind a proxy that overwrites this header (Fly-Client-IP on Fly.io); otherwise
+    # every caller shares the proxy's address and one guesser locks every staff member out.
+    client_ip_header: str | None = None
+    timeout = 30                       # seconds a client may stall mid-request before its thread is freed
     routes: list[Route]
 
     # ---- dispatch -----------------------------------------------------------
@@ -160,7 +170,7 @@ class Handler(BaseHTTPRequestHandler):
     def page_platform(self) -> None:
         account = self._account()
         if account is None:
-            self._redirect("/login")
+            self._send_file(STATIC / "landing.html")  # signed-out visitors meet Lifeline; staff go straight to the board
         elif not account.can(Permission.VIEW_BOARD):
             self._redirect(home_page(account))
         else:
@@ -190,6 +200,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def page_family(self, _share_token: str) -> None:
         self._send_file(STATIC / "status.html")
+
+    def healthz(self) -> None:
+        # Liveness only: a database blip must not make the host restart us and lose live outage timers.
+        self._send_json(HTTPStatus.OK, {"ok": True})
 
     def no_favicon(self) -> None:
         # Browsers ask for this on every page; answering keeps a 404 out of the console during demos.
@@ -224,7 +238,7 @@ class Handler(BaseHTTPRequestHandler):
             if not is_valid_twilio_signature(self.twilio_auth_token, self.public_url + self.path, params,
                                              self.headers.get("X-Twilio-Signature", "")):
                 raise HttpError(HTTPStatus.FORBIDDEN, "bad signature")
-        elif self.client_address[0] not in LOOPBACK_ADDRESSES:
+        elif not self._is_local_request():
             # Without Twilio there is no signature to check, so a forged "OK" could silence an
             # alert. Fail closed: only simulated replies from this machine are accepted.
             raise HttpError(HTTPStatus.FORBIDDEN, "SMS replies need Twilio signature checking")
@@ -276,7 +290,7 @@ class Handler(BaseHTTPRequestHandler):
         if not isinstance(email, str) or not isinstance(password, str):
             raise HttpError(HTTPStatus.BAD_REQUEST, "Enter your email and password.")
         email = email.strip().lower()
-        address = self.client_address[0]
+        address = self._client_ip()
         if self.throttle.is_blocked(address, email):
             raise HttpError(HTTPStatus.TOO_MANY_REQUESTS, "Too many attempts. Wait 15 minutes and try again.")
         member = self.authenticator.sign_in(email, password)
@@ -311,7 +325,7 @@ class Handler(BaseHTTPRequestHandler):
         """Give someone access: their sign-in account (if they have none yet) and their role.
         A new account gets a temporary password, returned once for the admin to pass on."""
         email, role = self._staff_change()
-        StaffAccount(email, role)  # validate before touching the identity provider
+        self.staff.check_role_change(self._account().email, email, role)  # before the identity provider resets anything
         password = temporary_password()
         created = self.accounts.create(email, password)
         account = self.staff.set_role(self._account().email, email, role)
@@ -335,7 +349,7 @@ class Handler(BaseHTTPRequestHandler):
         current, new = data.get("current_password"), data.get("new_password")
         if not isinstance(current, str) or not isinstance(new, str):
             raise HttpError(HTTPStatus.BAD_REQUEST, "Enter your current password and a new one.")
-        email, address = self._account().email, self.client_address[0]
+        email, address = self._account().email, self._client_ip()
         if self.throttle.is_blocked(address, email):
             raise HttpError(HTTPStatus.TOO_MANY_REQUESTS, "Too many attempts. Wait 15 minutes and try again.")
         check_new_password(current, new)
@@ -442,6 +456,19 @@ class Handler(BaseHTTPRequestHandler):
 
     # ---- request helpers ----------------------------------------------------
 
+    def _client_ip(self) -> str:
+        if self.client_ip_header:
+            return self.headers.get(self.client_ip_header, "").strip() or self.client_address[0]
+        return self.client_address[0]
+
+    def _is_local_request(self) -> bool:
+        """From this machine, for trust decisions. The socket peer must be loopback: a proxy header
+        is client-supplied text, so it can only veto (a proxy on this host forwarding an outside
+        caller), never grant."""
+        if self.client_address[0] not in LOOPBACK_ADDRESSES:
+            return False
+        return self._client_ip() in LOOPBACK_ADDRESSES
+
     def _session_id(self) -> str | None:
         cookie = SimpleCookie(self.headers.get("Cookie", ""))
         morsel = cookie.get(SESSION_COOKIE)
@@ -519,8 +546,14 @@ class Handler(BaseHTTPRequestHandler):
         self._send(status, json.dumps(payload).encode(), "application/json", cookie)
 
     def _send(self, status: HTTPStatus, body: bytes, content_type: str, cookie: str | None = None) -> None:
+        compressed = self._accepts_gzip() and len(body) > GZIP_MIN_BYTES and content_type.startswith(COMPRESSIBLE)
+        if compressed:
+            body = gzip.compress(body, compresslevel=6)
         self.send_response(status)
         self.send_header("Content-Type", content_type)
+        if compressed:
+            self.send_header("Content-Encoding", "gzip")
+            self.send_header("Vary", "Accept-Encoding")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         for name, value in SECURITY_HEADERS.items():
@@ -529,6 +562,9 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Set-Cookie", cookie)
         self.end_headers()
         self.wfile.write(body)
+
+    def _accepts_gzip(self) -> bool:
+        return "gzip" in self.headers.get("Accept-Encoding", "").lower()
 
     def log_message(self, fmt: str, *args) -> None:
         # Request lines contain family-link tokens; keep them out of logs.
@@ -543,6 +579,7 @@ Handler.routes = [
     Route("GET", r"/county", Handler.page_county),
     Route("GET", r"/api/county", Handler.api_county, needs=Permission.VIEW_COUNTY),
     Route("POST", r"/api/county/notify", Handler.api_county_notify, needs=Permission.RESPOND),
+    Route("GET", r"/healthz", Handler.healthz),
     Route("GET", r"/favicon\.ico", Handler.no_favicon),
     Route("GET", r"/static/((?:images/)?[A-Za-z0-9_-][A-Za-z0-9_.-]*)", Handler.static_asset),
     Route("POST", r"/api/report", Handler.api_report),
@@ -880,6 +917,7 @@ def main() -> None:
         status_link=lambda patient: family_link(public_url, patient),
         open_incidents=open_incidents,
         county_contacts=build_county_contacts(),
+        assume_powered_until_seen=os.environ.get("LIFELINE_DEMO_ASSUME_POWER") == "1",
     )
     storm, weather = build_storm_watch(open_incidents)
     respond_tokens = build_respond_tokens()
@@ -896,6 +934,7 @@ def main() -> None:
     Handler.public_url = public_url
     Handler.respond_tokens = respond_tokens
     Handler.geocoder = CensusGeocoder()
+    Handler.client_ip_header = os.environ.get("LIFELINE_CLIENT_IP_HEADER") or None
     Handler.twilio_auth_token = None
     if os.environ.get("LIFELINE_NOTIFIER") == "twilio":
         if not public_url.startswith("https://"):
@@ -914,6 +953,8 @@ def main() -> None:
     threading.Thread(target=run_every, args=(lifeline.refresh_county_figures, stop, 600, "emPOWER county lookup"),
                      daemon=True, name="empower").start()
     server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
+    # Hosts and `docker stop` send SIGTERM; take the same clean exit as Ctrl-C so queued saves finish.
+    signal.signal(signal.SIGTERM, signal.default_int_handler)
     log.info("Lifeline on http://0.0.0.0:%d · storage: %s · %d patients · %d open incidents restored · storm watch %s",
              port, backend_name, len(monitor.patients()), len(open_incidents), os.environ.get("LIFELINE_STORM_WATCH", "on"))
     try:

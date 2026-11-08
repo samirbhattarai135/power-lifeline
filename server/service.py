@@ -228,7 +228,8 @@ class Lifeline:
             plan = self._monitor.patient(device_id).plan
         status = {key: row[key] for key in (
             "name", "equipment", "status", "emergency", "backup_minutes", "backup_minutes_left",
-            "outage_started", "contacts_alerted", "last_seen",
+            "outage_started", "contacts_alerted", "contacts_alerted_at", "last_seen",
+            "acknowledged_at", "next_contact", "next_alert_at",
         )}
         status["hazards"] = hazards
         status["plan"] = None if plan.is_empty() else asdict(plan)
@@ -265,7 +266,9 @@ class Lifeline:
             "equipment": row["equipment"], "acuity": row["acuity"], "status": row["status"],
             "backup_minutes_left": row["backup_minutes_left"], "outage_started": row["outage_started"],
             "last_seen": row["last_seen"], "responder": _responder_for_family(row["acknowledged_by"]),
+            "responder_at": row["acknowledged_at"],
             "hazards": [h["headline"] for h in row["hazards"]],
+            "hazard_details": [{"headline": h["headline"], "ends": h["ends"], "level": h["level"]} for h in row["hazards"]],
             "unreached": row["unreached"], "backup_low": row["backup_low"], "critical": row["critical"],
         } for row in sorted(rows, key=lambda r: (urgency[r["status"]], not r["critical"], not r["unreached"],
                                                  r["backup_minutes_left"] or 0, r["acuity"]))]

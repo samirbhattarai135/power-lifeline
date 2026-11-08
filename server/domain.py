@@ -229,6 +229,13 @@ class Outage:
     def alerted_names(self) -> list[str]:
         return list(dict.fromkeys(a.name for a in self.alerted))
 
+    def first_alerted(self) -> list[dict]:
+        """Each person once, with when they were first told. Names only, never phone numbers."""
+        first: dict[str, datetime] = {}
+        for a in self.alerted:
+            first.setdefault(a.name, a.at)
+        return [{"name": name, "at": at.isoformat()} for name, at in first.items()]
+
 
 @dataclass(frozen=True)
 class SensorReadings:
@@ -302,8 +309,11 @@ class Monitor:
                  status_link: Callable[[Patient], str], new_reply_code: Callable[[], str] = random_reply_code,
                  silent_alert_after: timedelta = timedelta(minutes=5),
                  open_incidents: list[Outage] = (), new_id: Callable[[], str] = new_incident_id,
-                 county_contacts: tuple[Contact, ...] = ()):
+                 county_contacts: tuple[Contact, ...] = (), assume_powered_until_seen: bool = False):
         self._units: dict[str, Unit] = {}
+        # Demo only: units not yet installed read as powered, so one real prototype can sit among
+        # synthetic homes. A unit's own reports always win once it has sent one.
+        self._assume_powered_until_seen = assume_powered_until_seen
         # County emergency management for patients whose own call list names nobody from the county.
         self._county_contacts = tuple(county_contacts)
         self._escalate_after = escalate_after
@@ -757,7 +767,7 @@ class Monitor:
         if outage is not None:
             status = "outage"
         elif unit.last_seen is None:
-            status = "never_seen"
+            status = "ok" if self._assume_powered_until_seen else "never_seen"
         elif now - unit.last_seen > self._offline_after:
             status = "offline"
         else:
@@ -785,7 +795,9 @@ class Monitor:
             "outage_started": outage.started_at.isoformat() if outage else None,
             "backup_minutes_left": self._backup_left(p, outage, now) if outage else None,
             "acknowledged_by": outage.acknowledged_by if outage else None,
+            "acknowledged_at": outage.acknowledged_at.isoformat() if outage and outage.acknowledged_at else None,
             "contacts_alerted": outage.alerted_names() if outage else [],
+            "contacts_alerted_at": outage.first_alerted() if outage else [],
             **self._next_alert(unit),
             "unreached": outage.is_unreached(now, self._escalate_after) if outage else False,
             "backup_low": outage.backup_low_at is not None if outage else False,

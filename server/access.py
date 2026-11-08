@@ -93,11 +93,17 @@ class StaffDirectory:
             listed[self._bootstrap_admin] = StaffAccount(self._bootstrap_admin, Role.ADMIN)
         return sorted(listed.values(), key=lambda a: (list(Role).index(a.role), a.email))
 
-    def set_role(self, changed_by: str, email: str, role: Role) -> StaffAccount:
+    def check_role_change(self, changed_by: str, email: str, role: Role) -> StaffAccount:
+        """The account a role change would make, or InvalidStaffChange. Callers that touch the
+        identity provider first (adding someone resets their password) check here before doing so."""
         account = StaffAccount(email.strip().lower(), role)
+        if account.email == changed_by and role is not Role.ADMIN:
+            raise InvalidStaffChange("You can't take away your own admin role. Ask another admin.")
+        return account
+
+    def set_role(self, changed_by: str, email: str, role: Role) -> StaffAccount:
+        account = self.check_role_change(changed_by, email, role)
         with self._lock:
-            if account.email == changed_by and role is not Role.ADMIN:
-                raise InvalidStaffChange("You can't take away your own admin role. Ask another admin.")
             self._store.save(account)
             self._accounts[account.email] = account
         return account

@@ -59,13 +59,14 @@ def a_form(**overrides) -> dict:
 SILENT_AFTER = timedelta(minutes=5)
 
 
-def make_monitor(*patients: Patient, codes=None, open_incidents=(), county=()) -> Monitor:
+def make_monitor(*patients: Patient, codes=None, open_incidents=(), county=(), assume_powered=False) -> Monitor:
     codes = iter(codes or ["1111", "2222", "3333"])
     ids = (f"incident-{n}" for n in range(1000))
     return Monitor(list(patients or [a_patient()]), escalate_after=ESCALATE,
                    offline_after=timedelta(seconds=90), status_link=lambda p: f"https://x/s/{p.share_token}",
                    new_reply_code=lambda: next(codes), silent_alert_after=SILENT_AFTER,
-                   open_incidents=list(open_incidents), new_id=lambda: next(ids), county_contacts=county)
+                   open_incidents=list(open_incidents), new_id=lambda: next(ids), county_contacts=county,
+                   assume_powered_until_seen=assume_powered)
 
 
 class OutageFlow(unittest.TestCase):
@@ -137,6 +138,13 @@ class OutageFlow(unittest.TestCase):
         self.assertEqual(m.status("unit-01", T0 + timedelta(seconds=91))["status"], "offline")
         with self.assertRaises(UnknownDevice):
             m.report("nope", True, None, T0)
+
+    def test_demo_counts_units_that_never_reported_as_powered_until_they_do(self):
+        m = make_monitor(a_patient(), a_patient(device_id="unit-02"), assume_powered=True)
+        m.report("unit-02", False, 90, T0)  # the real prototype: its own reports always win
+        self.assertEqual(m.status("unit-01", T0)["status"], "ok")
+        self.assertNotIn("Unit has never connected", m.status("unit-01", T0)["attention"])
+        self.assertEqual(m.status("unit-02", T0)["status"], "outage")
 
 
 def amps(value):
@@ -349,6 +357,17 @@ class NextAlertOnBoard(unittest.TestCase):
         self.assertNotIn("phone", row["next_contact"])
         m.tick(T0 + ESCALATE)  # the nurse is alerted; nobody is left after her
         self.assertEqual((m.status("unit-01", T0 + ESCALATE)["next_contact"]), None)
+
+    def test_board_says_when_someone_claimed_it_and_when_each_person_was_alerted(self):
+        m = make_monitor()
+        m.report("unit-01", False, 90, T0)
+        m.tick(T0 + ESCALATE)
+        m.acknowledge("unit-01", "Nurse (agency)", T0 + ESCALATE + timedelta(seconds=5))
+        row = m.status("unit-01", T0 + ESCALATE + timedelta(seconds=5))
+        self.assertEqual(row["acknowledged_at"], (T0 + ESCALATE + timedelta(seconds=5)).isoformat())
+        self.assertEqual([a["name"] for a in row["contacts_alerted_at"]], ["Daughter", "Nurse"])
+        self.assertEqual(row["contacts_alerted_at"][0]["at"], T0.isoformat())
+        self.assertNotIn("+1", json.dumps(row["contacts_alerted_at"]))
 
     def test_nothing_is_next_once_someone_responds(self):
         m = make_monitor()
@@ -829,6 +848,10 @@ class RosterUseCases(unittest.TestCase):
         homes = self.lifeline.county_view()
         self.assertEqual([(h["name"], h["status"], h["responder"]) for h in homes],
                          [("James", "outage", "The care agency"), ("Ruth", "never_seen", None)])
+        self.assertIsNotNone(homes[0]["responder_at"])
+        self.assertEqual(homes[0]["hazard_details"], [])
+        family = self.lifeline.family_status("s" * 20)
+        self.assertTrue({"next_contact", "next_alert_at", "acknowledged_at", "contacts_alerted_at"} <= family.keys())
         text = json.dumps(homes)
         for secret in ("+1601", TOKEN, "s" * 20, "nurse@agency.org"):
             self.assertNotIn(secret, text)
@@ -1070,6 +1093,36 @@ class StaticFiles(unittest.TestCase):
             refused.exception.close()
 
 
+class HostedDeployment(unittest.TestCase):
+    def test_health_check_answers_without_signing_in(self):
+        server = app.ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/healthz", timeout=5) as response:
+            self.assertEqual((response.status, json.loads(response.read())), (200, {"ok": True}))
+
+    def test_client_address_comes_from_the_proxy_header_only_when_configured(self):
+        handler = app.Handler.__new__(app.Handler)
+        handler.client_address = ("10.0.0.7", 5000)
+        handler.headers = {"Fly-Client-IP": "203.0.113.9"}
+        self.assertEqual(handler._client_ip(), "10.0.0.7")
+        handler.client_ip_header = "Fly-Client-IP"
+        self.assertEqual(handler._client_ip(), "203.0.113.9")
+        handler.headers = {}
+        self.assertEqual(handler._client_ip(), "10.0.0.7")
+
+    def test_a_spoofed_proxy_header_never_makes_a_remote_caller_local(self):
+        handler = app.Handler.__new__(app.Handler)
+        handler.client_ip_header = "Fly-Client-IP"
+        handler.client_address, handler.headers = ("10.0.0.7", 5000), {"Fly-Client-IP": "127.0.0.1"}
+        self.assertFalse(handler._is_local_request())
+        handler.client_address, handler.headers = ("127.0.0.1", 5000), {"Fly-Client-IP": "203.0.113.9"}
+        self.assertFalse(handler._is_local_request())  # a proxy on this host forwarding an outside caller
+        handler.headers = {}
+        self.assertTrue(handler._is_local_request())
+
+
 class MemoryStaffStore:
     def __init__(self, *accounts):
         self.accounts = {a.email: a for a in accounts}
@@ -1100,6 +1153,14 @@ class FakeAccounts:
         if self.passwords.get(email) != current_password:
             return False
         self.passwords[email] = new_password
+        return True
+
+
+class SupabaseLikeAccounts(FakeAccounts):
+    """Like SupabaseAuthenticator.create: an existing account gets the temporary password too."""
+
+    def create(self, email, temporary_password):
+        self.passwords[email] = temporary_password
         return True
 
 
@@ -1232,6 +1293,13 @@ class RoleEnforcement(unittest.TestCase):
         self.assertEqual(self.accounts.passwords["nurse@a.org"], "old-password-1")
         self.assertEqual(self.call("nurse@a.org", "GET", "/api/me")[1]["role"], "viewer")
 
+    def test_a_refused_self_demotion_through_add_staff_leaves_the_password_alone(self):
+        app.Handler.accounts = self.accounts = SupabaseLikeAccounts(**{"admin@a.org": "admin-password-1"})
+        status, body = self.call("admin@a.org", "POST", "/api/staff", {"email": "admin@a.org", "role": "viewer"})
+        self.assertEqual(status, 400)
+        self.assertIn("own admin role", body["error"])
+        self.assertEqual(self.accounts.passwords["admin@a.org"], "admin-password-1")
+
     def test_people_change_their_own_password_with_the_current_one(self):
         change = lambda current, new: self.call("nurse@a.org", "POST", "/api/password", {"current_password": current, "new_password": new})
         self.assertEqual(change("wrong-password", "brand-new-password")[0], 400)
@@ -1244,6 +1312,39 @@ class RoleEnforcement(unittest.TestCase):
         status, me = self.call("viewer@a.org", "GET", "/api/me")
         self.assertEqual((status, me["role"]), (200, "viewer"))
         self.assertEqual(me["permissions"], ["view_board", "view_history"])
+
+
+class LandingAndCompression(unittest.TestCase):
+    def setUp(self):
+        app.Handler.sessions = Sessions("k" * 40)
+        app.Handler.staff = StaffDirectory(MemoryStaffStore(), [StaffAccount("nurse@a.org", Role.NURSE)])
+        server = app.ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        self.base = f"http://127.0.0.1:{server.server_port}"
+
+    def get(self, path, headers=None):
+        with urllib.request.urlopen(urllib.request.Request(self.base + path, headers=headers or {}), timeout=5) as response:
+            return response.status, dict(response.headers), response.read()
+
+    def test_signed_out_visitors_get_the_landing_page_and_staff_get_the_board(self):
+        status, _, body = self.get("/")
+        self.assertEqual(status, 200)
+        self.assertIn(b"When the power goes out, someone has to know.", body)
+        cookie = f"{app.SESSION_COOKIE}={app.Handler.sessions.start(StaffMember('nurse@a.org'))}"
+        self.assertIn(b'id="view-board"', self.get("/", {"Cookie": cookie})[2])
+
+    def test_text_is_gzipped_only_when_the_client_asks(self):
+        import gzip as gz
+        _, headers, body = self.get("/static/landing.css", {"Accept-Encoding": "gzip, br"})
+        self.assertEqual(headers.get("Content-Encoding"), "gzip")
+        self.assertIn(b"--night", gz.decompress(body))
+        _, plain_headers, plain = self.get("/static/landing.css")
+        self.assertNotIn("Content-Encoding", plain_headers)
+        self.assertEqual(gz.decompress(body), plain)
+        _, image_headers, _ = self.get("/static/images/hero-night.webp", {"Accept-Encoding": "gzip"})
+        self.assertNotIn("Content-Encoding", image_headers)
 
 
 class RespondRoute(unittest.TestCase):
