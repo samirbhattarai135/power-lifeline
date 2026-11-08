@@ -338,7 +338,7 @@ function announce(text) {
 // details right under the row (a side panel would cover the map it just moved).
 function unitRow(unit) {
   const state = homeState(unit);
-  const report = unit.status === "never_seen" ? "unit has not connected yet"
+  const report = unit.status === "never_seen" || !unit.last_seen ? "unit has not connected yet"
     : `last report ${secondsAgo(unit.last_seen)}${unit.battery_percent == null ? "" : `, unit battery ${unit.battery_percent}%`}`;
   const hasDetails = can("view_patients") && Boolean(unit.contacts);
   const select = el("button", { class: "home-select", type: "button", "aria-expanded": hasDetails ? String(Boolean(unit.open)) : null,
