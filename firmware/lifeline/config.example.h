@@ -1,18 +1,20 @@
 // Copy to config.h (git-ignored) and fill in.
 #pragma once
 
-#define WIFI_SSID      "your-wifi-or-phone-hotspot"
-#define WIFI_PASSWORD  "your-password"
-// Optional backup network (2.4 GHz). The unit joins whichever saved network is strongest, so on
-// demo day put the phone hotspot here (or first) next to the venue Wi-Fi. "" = no backup.
-#define WIFI_SSID_2      ""
-#define WIFI_PASSWORD_2  ""
-// Enterprise Wi-Fi only (eduroam, campus networks): WIFI_SSID is the network name (e.g. "eduroam"),
-// this is your sign-in username, and WIFI_PASSWORD is that account's password. Leave it out for home Wi-Fi or a hotspot.
-// #define WIFI_EAP_USERNAME "you@school.edu"
+// Wi-Fi networks, tried in this order until one connects (2.4 GHz only). After a drop the unit
+// starts again from the network it was on. WIFI_NETWORK(name, password, enterprise username):
+// the username is only for enterprise Wi-Fi such as eduroam (PEAP); use "" for home Wi-Fi or a
+// phone hotspot. Entries still ending in _HERE are skipped. Networks saved on the unit's setup
+// screen (hold the button at power-on) are tried before these.
+#define WIFI_NETWORKS \
+  WIFI_NETWORK("eduroam", "EDUROAM_PASSWORD_HERE", "you@school.edu") \
+  WIFI_NETWORK("HOME_WIFI_NAME_HERE", "HOME_WIFI_PASSWORD_HERE", "") \
+  WIFI_NETWORK("PHONE_HOTSPOT_NAME_HERE", "PHONE_HOTSPOT_PASSWORD_HERE", "")
+// Older single-network style still works: WIFI_SSID / WIFI_PASSWORD (+ WIFI_EAP_USERNAME) and
+// WIFI_SSID_2 / WIFI_PASSWORD_2 for a backup.
 
 // Where server/app.py runs. Hosted (HTTPS, certificate checked against the built-in root CA list):
-#define SERVER_URL     "https://your-app.fly.dev/api/report"
+#define SERVER_URL     "https://lifeline-pinebelt.azurewebsites.net/api/report"
 // Laptop on the same Wi-Fi/hotspot instead (plain HTTP, local fallback only):
 // #define SERVER_URL  "http://192.168.1.50:8080/api/report"
 // Use https:// for the hosted server: it redirects http:// and the unit does not follow redirects.

@@ -7,19 +7,28 @@
 //   current clamp SCT-013 on the equipment's cord: is the machine actually running?
 //   temperature  DHT11 / DHT22 / DS18B20: is the room safe without heat or AC?
 // Wi-Fi, server and unit ID can be set from a phone (setup screen) instead of config.h.
-// Joins whichever of two Wi-Fi networks is strongest (e.g. venue Wi-Fi and a phone hotspot) and
+// Tries each known Wi-Fi network in turn until one connects (e.g. eduroam, home Wi-Fi, phone hotspot) and
 // talks HTTPS to a hosted server, checking its certificate against the built-in root CA list.
 
 #include <WiFi.h>
-#include <WiFiMulti.h>
+#include <vector>
 #include <HTTPClient.h>
 #include <NetworkClientSecure.h>
+#if __has_include("esp_eap_client.h")
+#include "esp_eap_client.h"
+#endif
 #include <Preferences.h>
 #include <WebServer.h>
 #include <DNSServer.h>
 #include "config.h"
 
 // ---- defaults for settings older config.h files don't have ------------------------------
+#ifndef WIFI_SSID
+#define WIFI_SSID ""          // newer config.h files list every network in WIFI_NETWORKS instead
+#endif
+#ifndef WIFI_PASSWORD
+#define WIFI_PASSWORD ""
+#endif
 #ifndef WIFI_EAP_USERNAME
 #define WIFI_EAP_USERNAME ""  // set only for enterprise Wi-Fi such as eduroam
 #endif
@@ -63,15 +72,15 @@ DHT thermometer(TEMP_SENSOR_PIN, TEMP_SENSOR_TYPE);
 #endif
 #endif
 
-const char *FIRMWARE_VERSION = "0.4.0";
+const char *FIRMWARE_VERSION = "0.5.0";
 
 const uint32_t DEBOUNCE_MS       = 2000;   // ignore brownout flicker shorter than this
 const uint32_t HEARTBEAT_MS      = 30000;  // server marks a unit offline after ~90 s of silence
 const uint32_t RETRY_MS          = 3000;   // first retry after a failed report; doubles per failure...
 const uint32_t RETRY_MAX_MS      = 30000;  // ...up to the heartbeat interval, which would fire anyway
 const uint32_t HTTP_TIMEOUT_MS   = 8000;   // a TLS handshake on a slow hotspot takes 1-3 s
-const uint32_t WIFI_CONNECT_MS   = 5000;   // per-network connect wait inside WiFiMulti
-const uint32_t WIFI_RETRY_MS     = 30000;  // phone hotspots can take >10 s to finish a handshake
+const uint32_t WIFI_ATTEMPT_MS   = 15000;  // per network before moving on; hotspots can take >10 s
+const uint32_t WIFI_EAP_ATTEMPT_MS = 25000; // enterprise (eduroam) sign-in is slower
 const uint32_t HELP_HOLD_MS      = 3000;   // hold the button this long to call for help
 const uint32_t ACK_MAX_MS        = 1500;   // a press shorter than this is "I'm here"
 const uint32_t SETUP_HOLD_MS     = 3000;   // hold the button at power-on to open the setup screen
@@ -84,6 +93,12 @@ struct Settings {
   String ssid, password, ssid2, password2, serverUrl, deviceId, deviceToken;
 };
 Settings settings;
+
+// Known Wi-Fi networks in the order they are tried (built in buildWifiNetworks).
+struct WifiNetwork {
+  String ssid, password, eapUser;  // eapUser set = enterprise (PEAP) sign-in, e.g. eduroam
+};
+std::vector<WifiNetwork> wifiNetworks;
 Preferences prefs;
 
 void loadSettings() {
@@ -99,7 +114,7 @@ void loadSettings() {
 }
 
 bool hasRealSettings() {
-  return settings.ssid.length() > 0 && settings.ssid != "your-wifi-or-phone-hotspot";
+  return !wifiNetworks.empty();
 }
 
 // ---- state ------------------------------------------------------------------------------------
@@ -110,7 +125,6 @@ uint32_t rawChangedAt  = 0;
 uint32_t lastAttemptAt = 0;
 uint32_t nextAttemptInMs = 0;    // after lastAttemptAt; grows while the server can't be reached
 uint8_t failedAttempts = 0;
-uint32_t lastWifiTryAt = 0;
 bool changePending     = true;   // server has not yet confirmed the current state
 bool sendNow           = true;   // report on boot and right after every state change
 const char *pendingEvent = nullptr;  // "ack" or "help", sent with the next report until confirmed
@@ -221,16 +235,56 @@ float readRoomTempF() {
 
 // ---- reporting --------------------------------------------------------------------------------
 
-WiFiMulti wifiNetworks;
+// Every known network, in the order they are tried: the ones saved on the setup screen first, then
+// config.h's WIFI_NETWORKS list (or its older WIFI_SSID / WIFI_SSID_2 pair). The unit tries each for a
+// few seconds and moves to the next until one connects; after a drop it starts again from that one.
+size_t wifiIndex = 0;
+uint32_t wifiAttemptAt = 0;  // 0 = no attempt in progress
 
-void addWifiNetworks() {
-  if (strlen(WIFI_EAP_USERNAME) > 0) {
-    // Enterprise Wi-Fi (eduroam and most campuses): PEAP sign-in with a username, no CA check.
-    wifiNetworks.addAP(settings.ssid.c_str(), settings.password.c_str(), WIFI_EAP_USERNAME, WIFI_EAP_USERNAME);
+// The enterprise username config.h gives for this network name, if any.
+String eapUserFor(const String &ssid) {
+#ifdef WIFI_NETWORKS
+#define WIFI_NETWORK(name, password, eapUser) if (ssid == name) return eapUser;
+  WIFI_NETWORKS
+#undef WIFI_NETWORK
+#endif
+  return ssid == WIFI_SSID ? String(WIFI_EAP_USERNAME) : String("");
+}
+
+void addWifiNetwork(const String &ssid, const String &password, const String &eapUser) {
+  // Empty or still a config.example.h placeholder: skip, so it doesn't cost a connect attempt.
+  if (ssid.length() == 0 || ssid == "your-wifi-or-phone-hotspot" || ssid.endsWith("_HERE") || password.endsWith("_HERE")) return;
+  for (const WifiNetwork &known : wifiNetworks) if (known.ssid == ssid) return;
+  wifiNetworks.push_back({ssid, password, eapUser});
+}
+
+void buildWifiNetworks() {
+  wifiNetworks.clear();
+  addWifiNetwork(settings.ssid, settings.password, eapUserFor(settings.ssid));
+  addWifiNetwork(settings.ssid2, settings.password2, eapUserFor(settings.ssid2));
+#ifdef WIFI_NETWORKS
+#define WIFI_NETWORK(name, password, eapUser) addWifiNetwork(name, password, eapUser);
+  WIFI_NETWORKS
+#undef WIFI_NETWORK
+#endif
+}
+
+void beginWifi(const WifiNetwork &network) {
+  WiFi.disconnect();
+  if (network.eapUser.length() > 0) {
+    // PEAP sign-in with a username, no CA check (eduroam and most campuses).
+    Serial.printf("WiFi: trying \"%s\" (%u of %u), signing in as %s\n", network.ssid.c_str(),
+                  (unsigned)wifiIndex + 1, (unsigned)wifiNetworks.size(), network.eapUser.c_str());
+    WiFi.begin(network.ssid.c_str(), WPA2_AUTH_PEAP, network.eapUser.c_str(), network.eapUser.c_str(),
+               network.password.c_str());
   } else {
-    wifiNetworks.addAP(settings.ssid.c_str(), settings.password.c_str());
+#if __has_include("esp_eap_client.h")
+    esp_wifi_sta_enterprise_disable();  // else a home or hotspot (WPA2-PSK) attempt still tries EAP
+#endif
+    Serial.printf("WiFi: trying \"%s\" (%u of %u)\n", network.ssid.c_str(),
+                  (unsigned)wifiIndex + 1, (unsigned)wifiNetworks.size());
+    WiFi.begin(network.ssid.c_str(), network.password.c_str());
   }
-  if (settings.ssid2.length() > 0) wifiNetworks.addAP(settings.ssid2.c_str(), settings.password2.c_str());
 }
 
 void ensureWifi() {
@@ -239,17 +293,22 @@ void ensureWifi() {
     if (!announced) Serial.printf("WiFi: connected to \"%s\", IP %s, RSSI %d\n", WiFi.SSID().c_str(),
                                   WiFi.localIP().toString().c_str(), (int)WiFi.RSSI());
     announced = true;
+    wifiAttemptAt = 0;  // a later drop retries this network first
     return;
   }
   announced = false;
+  if (wifiNetworks.empty()) return;
   uint32_t now = millis();
-  if (lastWifiTryAt != 0 && now - lastWifiTryAt < WIFI_RETRY_MS) return;
-  lastWifiTryAt = now;
-  // Status 1 = network not found (often 5 GHz only), 4 = connect failed (often wrong password).
-  Serial.printf("WiFi: scanning for the saved networks... (last status %d)\n", WiFi.status());
-  // ponytail: run() blocks for the scan plus up to WIFI_CONNECT_MS, so a power change during a
-  // reconnect is noticed a few seconds late. Make it non-blocking if that ever matters.
-  wifiNetworks.run(WIFI_CONNECT_MS);
+  if (wifiAttemptAt != 0) {
+    uint32_t limit = wifiNetworks[wifiIndex].eapUser.length() > 0 ? WIFI_EAP_ATTEMPT_MS : WIFI_ATTEMPT_MS;
+    if (now - wifiAttemptAt < limit) return;  // still trying
+    // Status 1 = network not found (often 5 GHz only), 4 = connect failed (often wrong password).
+    Serial.printf("WiFi: \"%s\" did not connect (status %d), next network\n",
+                  wifiNetworks[wifiIndex].ssid.c_str(), WiFi.status());
+    wifiIndex = (wifiIndex + 1) % wifiNetworks.size();
+  }
+  beginWifi(wifiNetworks[wifiIndex]);
+  wifiAttemptAt = now;
 }
 
 // The full Mozilla root list built into the ESP32 core: no certificate to update when the host renews
@@ -337,7 +396,7 @@ void showSetupForm() {
       "<form method=\"POST\" action=\"/save\">" +
       setupField("ssid", "Wi-Fi name", settings.ssid, "text", "2.4 GHz networks only. Type it exactly as your phone shows it.") +
       setupField("password", "Wi-Fi password", "", "password", "Leave blank to keep the saved one.") +
-      setupField("ssid2", "Backup Wi-Fi name (optional)", settings.ssid2, "text", "A phone hotspot. The unit joins whichever saved network is strongest.") +
+      setupField("ssid2", "Backup Wi-Fi name (optional)", settings.ssid2, "text", "A phone hotspot. Tried after the first, then any listed in config.h.") +
       setupField("password2", "Backup Wi-Fi password", "", "password", "Leave blank to keep the saved one.") +
       setupField("server", "Lifeline server address", settings.serverUrl, "url",
                  "Hosted: https://&lt;name&gt;.fly.dev/api/report. Laptop: http://&lt;laptop IP&gt;:8080/api/report") +
@@ -405,6 +464,7 @@ void setup() {
 #endif
 
   loadSettings();
+  buildWifiNetworks();
   if (!hasRealSettings() || buttonHeldAtPowerOn()) runSetupScreen();
 
   // NVS (the setup screen) wins over config.h, so print what is actually in use. Never the token.
@@ -413,8 +473,7 @@ void setup() {
   tlsClient.setHandshakeTimeout(HTTP_TIMEOUT_MS / 1000);
 
   WiFi.mode(WIFI_STA);
-  WiFi.setAutoReconnect(true);
-  addWifiNetworks();
+  WiFi.setAutoReconnect(false);  // ensureWifi decides which network to try next
   // 201 = network not found (often 5 GHz only), 15 or 202 = usually a wrong password.
   WiFi.onEvent([](WiFiEvent_t, WiFiEventInfo_t info) {
     Serial.printf("WiFi: dropped, reason %d\n", info.wifi_sta_disconnected.reason);
