@@ -77,7 +77,6 @@ section > * { max-width: var(--wide); margin-inline: auto; }
 .hero-spill { position: absolute; left: 52%; top: 0; width: 60%; aspect-ratio: 1; border-radius: 50%; mix-blend-mode: screen;
               background: radial-gradient(closest-side, #F4B74040, #F4B74000); }
 .hero-scrim { position: absolute; inset: auto 0 0; height: 44%; background: linear-gradient(#0C182100, #0C1821B3); }
-.hero-leader { display: none; }
 .pills { position: absolute; left: 16px; bottom: 14px; display: grid; gap: 6px; justify-items: start; }
 .pill { display: inline-flex; align-items: center; gap: 8px; border-radius: 999px; white-space: nowrap; }
 .pill .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
@@ -105,8 +104,8 @@ section > * { max-width: var(--wide); margin-inline: auto; }
   .hero-img { object-position: 50% 50%; }
   .hero-spill { left: 51.3%; top: 9.7%; width: 35.9%; mix-blend-mode: overlay; background: radial-gradient(closest-side, #F4B74099, #F4B74000); }
   .hero-scrim { height: 34.5%; }
-  .hero-leader { display: block; position: absolute; left: 73.1%; top: 50.3%; width: 28px; height: 2px; background: var(--window); }
-  .pills { left: 75.3%; top: 39%; bottom: auto; gap: 8px; }
+  /* Narrower photos: the pills sit low on the left, over the scrim, so they never leave the frame. */
+  .pills { left: 2.5%; bottom: 6%; gap: 8px; }
   .pill { gap: 10px; }
   .pill-lost { padding: 8px 14px; font-size: 14px; }
   .pill-responding { padding: 10px 16px; font-size: 15px; }
@@ -355,7 +354,7 @@ section > * { max-width: var(--wide); margin-inline: auto; }
     .hero-photo { view-timeline: --hero block; }
     .hero-img { animation: lights-out linear both; animation-timeline: --hero; animation-range: exit 0% exit 60%; }
     .hero-spill { animation: spill-on 600ms 1.2s both, fade-out linear both; animation-timeline: auto, --hero; animation-range: normal, exit 0% exit 60%; }
-    .pills, .hero-leader { animation: fade-out linear both; animation-timeline: --hero; animation-range: exit 0% exit 60%; }
+    .pills { animation: fade-out linear both; animation-timeline: --hero; animation-range: exit 0% exit 60%; }
     @keyframes lights-out { to { filter: brightness(0.35); } }
     @keyframes fade-out { to { filter: opacity(0); } }
 
@@ -380,4 +379,22 @@ section > * { max-width: var(--wide); margin-inline: auto; }
   /* Phones: timeline steps fade in once as they enter. Armed only off-screen by landing.js. */
   .step.is-armed { opacity: 0; translate: 0 16px; }
   .step.is-in { opacity: 1; translate: none; transition: opacity 500ms var(--ease-out), translate 500ms var(--ease-out); }
+}
+
+/* The Lifeline mark: sized by height (20 px tall, 15 px wide), on-night, never red. */
+.brand { gap: 0.3em; }
+.brand-mark { height: 20px; width: auto; flex: none; color: var(--on-night); }
+.brand-mark .mark-window { stroke: none; }
+
+/* The demo patient is labelled like every other one on the page, small so the pill stays one line. */
+.pill .synthetic { font-size: 0.85em; font-weight: 400; }
+
+/* Wide photos: the pills sit beside the unit, anchored to the photo's right edge so they never clip,
+   with the leader drawn from the pills back towards the unit. Measured on the photo, not the window. */
+@media (min-width: 900px) {
+  .hero-photo { container: hero-photo / inline-size; }
+}
+@container hero-photo (min-width: 1160px) {
+  .pills { left: auto; right: 2.5%; top: 39%; bottom: auto; }
+  .pills::before { content: ""; position: absolute; left: -28px; bottom: 19px; width: 28px; height: 2px; background: var(--window); }
 }

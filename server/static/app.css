@@ -581,11 +581,10 @@ body.has-outage .sound-toggle.is-unarmed { border-color: var(--color-out); color
 /* ---- top bar ------------------------------------------------------------------ */
 .topbar { min-height: 64px; padding-block: 0.5rem; }
 .wordmark { font-family: var(--font-display); font-size: 1.375rem; }
-.wordmark svg { color: var(--color-out); }
 .views a { font-weight: 400; }
 .views a[aria-current="page"] { font-weight: 700; background: var(--color-paper-sunk); }
 .account-toggle { display: none; }
-@media (min-width: 641px) {
+@media (min-width: 1440px) {
   .who { display: contents; }
   .who #who { margin-left: auto; color: var(--color-ink-muted); }
   .topbar > .sound-toggle { order: 2; }
@@ -998,7 +997,6 @@ dialog.panel { width: min(46rem, 100vw); background: var(--color-paper); }
 /* Change password and sign in */
 .page.account { max-width: 32rem; padding-top: 3rem; }
 .account .family-brand { font-family: var(--font-display); font-size: 1.25rem; color: var(--color-ink); }
-.account .family-brand svg { color: var(--color-out); }
 .account-form { background: #fff; border: 1px solid var(--color-rule); border-radius: 14px; padding: 1.75rem; box-shadow: 0 8px 24px #16252F0F; }
 .account-form h1 { font: 700 2rem/1.1 var(--font-display); letter-spacing: -0.02em; }
 .account-form .panel-actions { position: static; background: transparent; }
@@ -1033,3 +1031,28 @@ dialog.panel { width: min(46rem, 100vw); background: var(--color-paper); }
 }
 .signin-intro .signin-brand { color: #EEF3F1; font-size: 1.375rem; }
 .signin-copy { display: grid; gap: 1rem; }
+
+/* The Lifeline mark (docs/design/logo): sized by height, never red. Red means a patient is in danger; the logo is not an alert. */
+.wordmark, .family-brand, .signin-brand { gap: 0.3em; }
+.wordmark svg.brand-mark, .family-brand svg.brand-mark, .account .family-brand svg.brand-mark { height: 1.25rem; width: auto; flex: none; color: var(--color-ink); }
+.signin-brand svg.brand-mark { height: 1.375rem; width: auto; color: #EEF3F1; }
+.brand-mark .mark-window { stroke: none; }
+
+/* Top bar from 641 to 1439 px: account items move into the Account menu so tab labels never truncate,
+   and below 1200 px the tabs take their own row. */
+.views a { flex: none; }
+@media (min-width: 641px) and (max-width: 1439px) {
+  .topbar { position: relative; flex-wrap: wrap; row-gap: 0.25rem; }
+  .topbar > .sound-toggle { margin-left: auto; }
+  .account-toggle { display: inline-flex; }
+  .account-toggle[aria-expanded="true"] { background: var(--color-paper-sunk); }
+  .who { display: none; position: absolute; right: 1.25rem; top: calc(100% - 0.25rem); z-index: 1100; min-width: 18rem; flex-direction: column; align-items: stretch;
+         gap: 0.5rem; margin: 0; padding: 0.875rem; background: #fff; border: 1px solid var(--color-rule); border-radius: 12px; box-shadow: 0 12px 32px #16252F26; }
+  .who.is-open { display: flex; }
+  .who .tag { align-self: flex-start; }
+  .who .btn { justify-content: flex-start; }
+}
+@media (min-width: 641px) and (max-width: 1199px) {
+  .topbar .views { order: 10; flex: 1 1 100%; }
+  .board { height: calc(100dvh - 97px); }
+}
