@@ -21,12 +21,13 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import secrets
 import zipfile
 from pathlib import Path
 
 SERVER = Path(__file__).resolve().parent
 DIST = SERVER.parent / "dist"
-NOT_DEPLOYED = {"test_domain.py", "smoke_test.py", "deploy_azure.py", "seed_demo_history.py"}
+NOT_DEPLOYED = {"test_domain.py", "smoke_test.py", "deploy_azure.py", "seed_demo_history.py", "storm_drill.py"}
 PORT = "8000"  # the built-in Python container's port; App Service forwards 443 to it
 
 # Plain settings: safe to show, the same for every deploy.
@@ -118,6 +119,36 @@ def settings(public_url: str, demo: bool) -> Path:
     return target
 
 
+def storm_settings(public_url: str, admin_email: str) -> Path:
+    """The storm-demo board: its own local-file data under /home (persistent on App Service, untouched
+    by zip deploys), synthetic homes only, nothing copied from server/.env, so it can never reach the
+    real Supabase project or the ntfy topic. Outages stay open without heartbeats (no laptop needed
+    once server/storm_drill.py has run)."""
+    if not public_url.startswith("https://") or public_url.rstrip("/") != public_url:
+        raise SystemExit("--public-url must be https://<host> with no trailing slash")
+    password = secrets.token_urlsafe(18)
+    values = {**SETTINGS, **STAGE_DEMO,
+              "LIFELINE_PUBLIC_URL": public_url,
+              "LIFELINE_NOTIFIER": "console",           # synthetic numbers only; nothing leaves the server
+              "LIFELINE_ADMIN_PASSWORD": password,
+              "LIFELINE_BOOTSTRAP_ADMIN": admin_email,
+              "LIFELINE_PATIENTS": "/home/site/storm-patients.json",
+              "LIFELINE_OUTAGES": "/home/site/storm-outages.json",
+              "LIFELINE_STAFF": "/home/site/storm-staff.json",
+              "LIFELINE_SESSION_SECRET": secrets.token_urlsafe(32),
+              "LIFELINE_RESPOND_SECRET": secrets.token_urlsafe(32),
+              "ESCALATE_AFTER_SECONDS": "120",
+              "OFFLINE_AFTER_SECONDS": "604800",
+              "SILENT_ALERT_AFTER_SECONDS": "604800",
+              "LIFELINE_EMPOWER": "on"}
+    target = DIST / "azure-storm-settings.json"
+    write_private(target, json.dumps([{"name": k, "value": v, "slotSetting": False} for k, v in values.items()]))
+    write_private(DIST / "storm-admin-password.txt", password + "\n")
+    print(f"{target}: {len(values)} settings: {', '.join(sorted(values))}")
+    print(f"sign-in password for {admin_email}: {DIST / 'storm-admin-password.txt'} (mode 600, not shown)")
+    return target
+
+
 def vm_env(public_url: str, demo: bool) -> Path:
     """The server/.env for the VM, in the format app.load_dotenv reads."""
     values = {k: v for k, v in hosted_values(public_url, demo).items() if k not in APP_SERVICE_ONLY}
@@ -141,8 +172,13 @@ def main() -> None:
     vm_parser = commands.add_parser("vm-env", help="write dist/lifeline.env for the VM")
     vm_parser.add_argument("--public-url", required=True, help="https://<VM DNS name>, no trailing slash")
     vm_parser.add_argument("--demo", action="store_true", help="stage settings: 12 s escalation, Storm Watch demo")
+    storm_parser = commands.add_parser("storm-settings", help="write dist/azure-storm-settings.json (storm-demo board)")
+    storm_parser.add_argument("--public-url", required=True, help="https://<storm app defaultHostName>")
+    storm_parser.add_argument("--admin", required=True, help="email that signs in as admin")
     args = parser.parse_args()
-    if args.command == "package":
+    if args.command == "storm-settings":
+        storm_settings(args.public_url, args.admin)
+    elif args.command == "package":
         package()
     elif args.command == "settings":
         settings(args.public_url, args.demo)
