@@ -396,8 +396,9 @@ async function refreshBoard() {
     boardMap.showUnits(units);
   } catch (error) {
     lastBoard = "";  // force a full redraw once the server answers again
-    // Access removed or role changed mid-shift: the server sends this person to their right page.
-    if (error instanceof ApiError && error.status === 403) location.assign("/");
+    // Access removed or role changed mid-shift: /login sends someone with a role to their own page,
+    // and someone without one to the sign-in form (not the public landing page).
+    if (error instanceof ApiError && error.status === 403) location.assign("/login");
     else if (!(error instanceof ApiError && error.status === 401)) markLive(false);
   }
 }

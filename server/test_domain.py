@@ -1390,7 +1390,9 @@ class FakeSupabase(BaseHTTPRequestHandler):
         if self.path.startswith("/rest/v1/slow"):
             time.sleep(0.5)  # accepts the connection, then goes quiet mid-reply
             return
-        if self.path.startswith("/rest/v1/outages"):
+        if self.path.startswith("/auth/v1/admin/users"):
+            self._answer(200, {"users": [{"id": "u-1", "email": "Taken@Agency.org"}]})
+        elif self.path.startswith("/rest/v1/outages"):
             m = make_monitor()
             m.report("unit-01", False, 90, T0)
             self._answer(200, [outage_to_record(o) for o in m.drain_changes()])
@@ -1399,7 +1401,10 @@ class FakeSupabase(BaseHTTPRequestHandler):
 
     def do_POST(self):
         body = self._record()
-        if self.path.startswith("/auth/v1/token"):
+        if self.path == "/auth/v1/admin/users":
+            exists = body["email"] == "taken@agency.org"
+            self._answer(422 if exists else 200, {"error_code": "email_exists"} if exists else {"id": "u-2"})
+        elif self.path.startswith("/auth/v1/token"):
             ok = body == {"email": "nurse@agency.org", "password": "right"}
             self._answer(200 if ok else 400, {"user": {"email": "nurse@agency.org"}} if ok else {"msg": "Invalid login"})
         elif body[0]["device_id"] == "unit-99":
@@ -1410,6 +1415,10 @@ class FakeSupabase(BaseHTTPRequestHandler):
     def do_DELETE(self):
         self._record()
         self._answer(204)
+
+    def do_PUT(self):
+        self._record()
+        self._answer(200, {"id": "u-1"})
 
     def log_message(self, *args):
         pass
@@ -1478,6 +1487,17 @@ class SupabaseAdapters(unittest.TestCase):
         self.assertEqual(auth.sign_in("nurse@agency.org", "right"), StaffMember("nurse@agency.org"))
         self.assertIsNone(auth.sign_in("nurse@agency.org", "wrong"))
         self.assertIsNone(auth.sign_in("", ""))
+
+    def test_adding_staff_whose_email_someone_already_registered_takes_the_account_over(self):
+        # With public sign-up on, anyone may have registered this email first; their password must stop working.
+        auth = SupabaseAuthenticator(self.client())
+        self.assertTrue(auth.create("taken@agency.org", "temp-password-1"))
+        method, path, _, body = FakeSupabase.requests[-1]
+        self.assertEqual((method, path), ("PUT", "/auth/v1/admin/users/u-1"))
+        self.assertEqual(body, {"password": "temp-password-1", "email_confirm": True})
+        FakeSupabase.requests = []
+        self.assertTrue(auth.create("new@agency.org", "temp-password-2"))
+        self.assertEqual([r[0] for r in FakeSupabase.requests], ["POST"])
 
 
 if __name__ == "__main__":
