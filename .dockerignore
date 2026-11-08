@@ -1,0 +1,21 @@
+# Only server/ is copied into the image. Secrets and local state must never be baked into a layer:
+# app.py reads server/.env if it exists, so a copied .env would silently override nothing-set values.
+**/.env
+**/.env.*
+!server/.env.example
+server/patients.json
+server/outages.json
+server/staff.json
+server/.patients-*
+server/.outages-*
+**/__pycache__
+**/*.pyc
+.git
+.hallmark
+.DS_Store
+**/.DS_Store
+firmware
+hardware
+docs
+supabase
+*.pen

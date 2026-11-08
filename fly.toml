@@ -1,0 +1,51 @@
+# Fly.io config for the Lifeline server. Runbook: docs/ops/deploy.md
+#
+# Lifeline keeps live outage timers in memory and escalates from a background ticker, so it must be
+# EXACTLY ONE always-on machine: never let it stop, never run two (two tickers = every alert twice).
+# Always deploy with: fly deploy --ha=false
+
+app = "CHANGE-ME"               # set by `fly launch --name ...`; must match LIFELINE_PUBLIC_URL below
+primary_region = "CHANGE-ME"    # `fly platform regions`; pick the one nearest the Supabase project
+
+kill_signal = "SIGTERM"         # app.py exits cleanly on SIGTERM (queued incident saves finish)
+kill_timeout = 30
+
+[build]
+  dockerfile = "Dockerfile"
+
+[deploy]
+  strategy = "rolling"          # with one machine this updates it in place; bluegreen/canary would run two tickers
+
+[env]
+  PORT = "8080"
+  LIFELINE_PUBLIC_URL = "https://CHANGE-ME.fly.dev"
+  LIFELINE_CLIENT_IP_HEADER = "Fly-Client-IP"
+  LIFELINE_NOTIFIER = "ntfy"
+  LIFELINE_STORM_WATCH = "on"
+  LIFELINE_TIMEZONE = "America/Chicago"
+  ESCALATE_AFTER_SECONDS = "120"
+  OFFLINE_AFTER_SECONDS = "90"
+  SILENT_ALERT_AFTER_SECONDS = "300"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = false
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    method = "GET"
+    path = "/healthz"
+    interval = "15s"
+    timeout = "5s"
+    grace_period = "60s"        # startup retries Supabase up to 4 x 5 s before the port opens
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
+
+# Come back after any exit (e.g. Supabase unreachable for the whole startup retry window).
+[[restart]]
+  policy = "always"
+  retries = 10
