@@ -24,7 +24,7 @@ function playOnceInView(node, threshold) {
 if (motionAllowed()) {
   playOnceInView(document.getElementById("storm-visual"), 0.3);
   if (matchMedia("(max-width: 1023px)").matches) {
-    document.querySelectorAll(".step").forEach((step) => playOnceInView(step, 0.2));
+    document.querySelectorAll(".step, .tour-row").forEach((node) => playOnceInView(node, 0.2));
   }
 }
 
@@ -151,6 +151,34 @@ function drawCallouts(gsap) {
   });
 }
 
+// The tour: each screenshot rises out of a soft clip as it arrives, then the text message follows.
+// Only things below the fold start hidden; anything already seen stays put.
+function revealTour(gsap) {
+  for (const row of document.querySelectorAll(".tour-row")) {
+    if (!notYetSeen(row)) continue;
+    const shot = row.querySelector(".tour-shot img");
+    const copy = row.querySelectorAll(".tour-copy > *");
+    const timeline = gsap.timeline({ scrollTrigger: { trigger: row, start: "top 78%", once: true } });
+    timeline.from(shot, { clipPath: "inset(14% 6% 14% 6% round 20px)", y: 48, opacity: 0.2, duration: 0.9, ease: "expo.out" });
+    timeline.from(copy, { y: 18, autoAlpha: 0, duration: 0.6, ease: "power2.out", stagger: 0.08 }, 0.15);
+  }
+}
+
+// The board screenshot settles from a slight tilt-back as it scrolls in: scrubbed, never hidden.
+function settleBoard(gsap) {
+  const shot = document.querySelector(".board-shot");
+  gsap.fromTo(shot, { scale: 0.94, y: 40 }, { scale: 1, y: 0, ease: "none",
+    scrollTrigger: { trigger: "#board-stage", start: "top bottom", end: "top 35%", scrub: 0.4 } });
+}
+
+// The pilot ledger: three lines arrive in order, once.
+function revealLedger(gsap) {
+  const ledger = document.querySelector(".ledger");
+  if (!ledger || !notYetSeen(ledger)) return;
+  gsap.from(ledger.querySelectorAll(".line"), { y: 20, autoAlpha: 0, duration: 0.6, ease: "power2.out", stagger: 0.12,
+    scrollTrigger: { trigger: ledger, start: "top 80%", once: true } });
+}
+
 function magneticButton(gsap) {
   const button = document.getElementById("pilot-cta");
   const toX = gsap.quickTo(button, "x", { duration: 0.3, ease: "power3" });
@@ -190,6 +218,9 @@ async function startMotion() {
     splitTitles(gsap);
     if (desktop) cleanups.push(pinEscalation(gsap));
     if (wide) drawCallouts(gsap);
+    revealTour(gsap);
+    settleBoard(gsap);
+    revealLedger(gsap);
     if (finePointer && desktop) cleanups.push(heroParallax(gsap));
     if (finePointer) cleanups.push(magneticButton(gsap));
     return () => cleanups.forEach((cleanup) => cleanup?.());

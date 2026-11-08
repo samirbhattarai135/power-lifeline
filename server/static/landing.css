@@ -4,26 +4,25 @@
  * Mobile first. Everything is visible without JS; motion is opt-in under prefers-reduced-motion: no-preference. */
 
 :root {
-  --night: #0C1821;
-  --night-2: #132430;
-  --night-line: #24394A;
-  --window: #F4B740;
-  --storm: #C9861A;
-  --alarm: #D2392F;
-  --paper: #F3F6F4;
-  --paper-2: #E6EDEA;
-  --paper-line: #D5DFDB;
-  --ink: #16252F;
-  --ink-muted: #4D5F69;
-  --on-night: #EEF3F1;
-  --on-night-muted: #9DB1BB;
-  --on-night-faint: #8DA2AE;
-  --amber-ink: #8A5A0C;  /* amber text that passes contrast on paper */
-  --font-display: "Bricolage Grotesque", "Atkinson Hyperlegible Next", system-ui, sans-serif;
-  --font-body: "Atkinson Hyperlegible Next", system-ui, sans-serif;
+  /* Aliases onto tokens.css, the one palette shared with the app. */
+  --night: var(--color-night);
+  --night-2: var(--color-night-2);
+  --night-line: var(--color-night-line);
+  --window: var(--color-acked);
+  --storm: var(--color-storm);
+  --alarm: var(--color-out);
+  --paper: var(--color-paper);
+  --paper-2: var(--color-paper-sunk);
+  --paper-line: var(--color-rule);
+  --ink: var(--color-ink);
+  --ink-muted: var(--color-ink-muted);
+  --on-night: var(--color-on-night);
+  --on-night-muted: var(--color-on-night-muted);
+  --on-night-faint: var(--color-on-night-faint);
+  --amber-ink: var(--color-acked-ink);
   --pad: clamp(16px, 5.6vw, 80px);
   --wide: 1280px;
-  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --dawn: clamp(100px, 11vw, 160px);  /* the one short, warm night-to-paper transition after the evidence */
   color-scheme: dark;
 }
 
@@ -242,10 +241,10 @@ section > * { max-width: var(--wide); margin-inline: auto; }
   .board-marks .leader { stroke: var(--window); stroke-width: 2; }
   .callouts { display: block; }
   .callout { position: absolute; left: 0; width: 23.4375%; }
-  .callout:nth-child(1) { top: 16%; }
-  .callout:nth-child(2) { top: 54.857%; }
-  .callout:nth-child(3) { top: 86.571%; }
-  .callout-tag { left: 80.3125%; top: 56.857%; width: 19.0625%; padding: 14px 16px; border-radius: 12px;
+  .callout:nth-child(1) { top: 22.2%; }
+  .callout:nth-child(2) { top: 56%; }
+  .callout:nth-child(3) { top: 78.4%; }
+  .callout-tag { left: 80.3125%; top: 47.14%; width: 19.0625%; padding: 14px 16px; border-radius: 12px;
                  background: #0C1821F2; box-shadow: inset 0 0 0 1px var(--window); }
   .callout-tag p { font-size: 14px; }
 }
@@ -273,7 +272,7 @@ section > * { max-width: var(--wide); margin-inline: auto; }
 /* The radar sweep, parked by default (its final frame): an amber wedge trailing a line at --angle. */
 @property --angle { syntax: "<angle>"; inherits: false; initial-value: 0deg; }
 .sweep { position: absolute; left: -2.9%; top: -4.8%; width: 93%; aspect-ratio: 1; border-radius: 50%;
-         background: conic-gradient(from var(--angle), #F4B74000 0turn 0.78turn, #F4B74070 1turn); }
+         background: conic-gradient(from var(--angle), #F4B74000 0turn 0.7turn, #F4B74055 0.96turn, #F4B74000 1turn); }
 .warning-tag { justify-self: start; padding: 8px 12px; border-radius: 8px; font-size: 13px; font-weight: 700; background: #FFFFFFE6; box-shadow: inset 0 0 0 1px var(--storm); }
 .call-first { display: grid; gap: 10px; padding: 14px 16px; border-radius: 12px; background: #fff; box-shadow: inset 0 0 0 1px var(--paper-line), 0 8px 24px #16252F1F; }
 .cf-head { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 700; }
@@ -327,7 +326,6 @@ section > * { max-width: var(--wide); margin-inline: auto; }
 .pilot h2 { font-size: 40px; line-height: 1.04; letter-spacing: -0.028em; }
 .pilot .lede { max-width: 640px; }
 .pilot .cta-row { width: 100%; max-width: 448px; }
-.window-glow { width: 14px; height: 14px; border-radius: 50%; background: var(--window); box-shadow: 0 0 40px #F4B740CC; }
 .site-footer { display: flex; flex-wrap: wrap; gap: 16px; justify-content: space-between; align-items: center;
                max-width: var(--wide); margin: 0 var(--pad); padding: 32px 0 40px; border-top: 1px solid var(--night-line); color: #6E8592; font-size: 14px; }
 @media (min-width: 900px) {
@@ -359,11 +357,9 @@ section > * { max-width: var(--wide); margin-inline: auto; }
     @keyframes fade-out { to { filter: opacity(0); } }
 
     /* Pilot CTA: the background warms from night to amber glow as it comes into view. */
-    .pilot::before { animation: warm linear both; animation-timeline: view(); animation-range: entry 20% cover 50%; }
+    .pilot-card::before { animation: warm linear both; animation-timeline: view(); animation-range: entry 20% cover 50%; }
     @keyframes warm { from { opacity: 0; } }
   }
-  .window-glow { animation: breathe 2.4s ease-in-out 3; }
-  @keyframes breathe { 50% { box-shadow: 0 0 56px 6px #F4B740EE; } }
 
   /* Storm: one radar revolution, then the warning fills and the list rises. Armed only off-screen by landing.js. */
   .storm-visual.is-armed .sweep { --angle: -360deg; }
@@ -377,7 +373,8 @@ section > * { max-width: var(--wide); margin-inline: auto; }
   .storm-visual.is-in .call-first li:nth-child(3) { transition-delay: 2.56s; }
 
   /* Phones: timeline steps fade in once as they enter. Armed only off-screen by landing.js. */
-  .step.is-armed { opacity: 0; translate: 0 16px; }
+  .step.is-armed, .tour-row.is-armed { opacity: 0; translate: 0 16px; }
+  .tour-row.is-in { opacity: 1; translate: none; transition: opacity 500ms var(--ease-out), translate 500ms var(--ease-out); }
   .step.is-in { opacity: 1; translate: none; transition: opacity 500ms var(--ease-out), translate 500ms var(--ease-out); }
 }
 
@@ -398,3 +395,81 @@ section > * { max-width: var(--wide); margin-inline: auto; }
   .pills { left: auto; right: 2.5%; top: 39%; bottom: auto; }
   .pills::before { content: ""; position: absolute; left: -28px; bottom: 19px; width: 28px; height: 2px; background: var(--window); }
 }
+
+
+/* ======================================================================== */
+/* v3: one continuous night, then dawn into paper, then dusk back to night.  */
+/* No section seams: only two soft transitions, carried by --dawn.           */
+/* ======================================================================== */
+.btn { border-radius: var(--radius-md); }
+.btn-primary:hover { box-shadow: none; background: color-mix(in oklab, var(--window) 86%, white); }
+.btn-outline:hover { box-shadow: inset 0 0 0 1.5px var(--on-night-muted); background: color-mix(in oklab, var(--night) 80%, white 4%); }
+
+/* night -> paper: the evidence section fades out into the answer */
+.evidence { border-top: 0; padding-bottom: calc(56px + var(--dawn));
+  background:
+    radial-gradient(60% var(--dawn) at 50% 100%, #F4B74024, transparent 70%),
+    linear-gradient(to bottom, transparent calc(100% - var(--dawn)), #2A2414 calc(100% - var(--dawn) * 0.62), #B9B1A0 calc(100% - var(--dawn) * 0.22), var(--paper)); }
+.trust li { display: block; }
+.trust h3 { margin-bottom: 6px; }
+
+/* the paper stretch: how it works, the board, the tour, storm watch, agencies */
+.board { background: var(--paper); color: var(--ink); color-scheme: light; padding-block: 72px 56px; }
+.board-head h2 { color: var(--ink); }
+.board .lede { color: var(--ink-muted); }
+.board-shot { box-shadow: 0 0 0 1px var(--color-rule), var(--shadow-media); }
+.callout h3 { color: var(--ink); }
+.callout p { color: var(--ink-muted); }
+.board-marks .target { fill: #C9891C14; stroke: var(--color-acked-deep); }
+.board-marks .leader { stroke: var(--color-acked-deep); }
+@media (min-width: 1100px) { .callout-tag h3 { color: var(--on-night); } .callout-tag p { color: var(--on-night-muted); } }
+.agencies { background: var(--paper); }
+.features li { display: block; padding-top: 18px; border-top: 1px solid var(--paper-line); }
+.features { gap: 22px; }
+.app-icon { color: var(--on-night); stroke: none; padding: 3px 4px; }
+
+/* the tour: the family's phone and the county's list, real screenshots of the app */
+.tour { background: var(--paper); color: var(--ink); color-scheme: light; padding-block: 64px 72px; }
+.tour > h2 { font-size: 28px; line-height: 1.1; letter-spacing: -0.025em; max-width: 24ch; margin-left: 0; }
+.tour-row { display: grid; gap: 32px; align-items: center; margin-top: 48px; }
+.tour-copy { display: grid; gap: 14px; max-width: 34rem; }
+.tour-copy h3 { font: 700 24px/1.15 var(--font-display); letter-spacing: -0.015em; }
+.tour-copy > p { font-size: 17px; line-height: 1.55; color: var(--ink-muted); }
+.tour-shot { margin: 0; }
+.tour-shot img { width: 100%; border-radius: var(--radius-xl); box-shadow: 0 0 0 1px var(--color-rule), var(--shadow-media); background: var(--paper); }
+.tour-phone { max-width: 340px; justify-self: center; }
+.tour-phone img { border-radius: 30px; }
+.sms { margin: 6px 0 0; max-width: 30rem; }
+.sms figcaption { font-size: 13px; color: var(--ink-muted); margin-bottom: 8px; }
+.sms blockquote { margin: 0; padding: 14px 16px; border-radius: 18px 18px 18px 6px; background: var(--color-paper-raised); box-shadow: 0 0 0 1px var(--color-rule); }
+.sms p { font-size: 15px; line-height: 1.45; color: var(--ink); }
+@media (min-width: 1024px) {
+  .tour { padding-block: 120px 104px; }
+  .tour > h2 { font-size: clamp(36px, 3.4vw, 48px); line-height: 1.06; }
+  .tour-row { grid-template-columns: minmax(0, 360px) minmax(0, 1fr); gap: 96px; margin-top: 72px; }
+  .tour-row-flip { grid-template-columns: minmax(0, 1fr) minmax(0, 1.7fr); gap: clamp(48px, 5vw, 96px); }
+  .tour-phone { justify-self: start; }
+  .board { padding-block: 112px 64px; }
+  .agencies { padding-block: 112px 120px; }
+}
+
+/* the close: night returns as one object on the paper, not as a second wash */
+.pilot { display: block; background: var(--paper); padding-block: 24px 72px; text-align: center; }
+.pilot::before { content: none; }
+.pilot-card { position: relative; isolation: isolate; overflow: hidden; display: grid; justify-items: center; gap: 28px;
+  max-width: var(--wide); margin-inline: auto; padding: 64px 24px; border-radius: var(--radius-lg); background: var(--night); color: var(--on-night); }
+.pilot-card::before { content: ""; position: absolute; inset: 0; z-index: -1; background: radial-gradient(70% 90% at 50% 0%, #F4B7401F, transparent 70%); }
+.pilot-card h2 { max-width: 18ch; }
+.site-footer { background: var(--paper); color: var(--ink-muted); border-top-color: var(--paper-line); max-width: none; margin: 0; padding-inline: var(--pad); }
+.site-footer .brand { color: var(--ink); }
+.site-footer .brand-mark { color: var(--ink); }
+@media (min-width: 900px) {
+  .pilot { padding-block: 32px 96px; }
+  .pilot-card { padding: 104px 48px 96px; gap: 32px; }
+}
+/* Sub-pixel section edges must not let the night show through as a hairline seam. */
+.how, .board, .tour, .storm, .agencies { box-shadow: 0 1px 0 var(--paper), 0 -1px 0 var(--paper); }
+.tour-phone { width: 100%; }
+/* At 1024 the five steps are 182 px wide: their content must wrap inside the column, never widen it. */
+@media (min-width: 1024px) { .step { grid-template-columns: minmax(0, 1fr); } .note { min-width: 0; } }
+.pilot > .pilot-card { max-width: var(--wide); }

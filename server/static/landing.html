@@ -18,6 +18,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,700;12..96,800&family=Atkinson+Hyperlegible+Next:wght@400;700&display=swap">
+<link rel="stylesheet" href="/static/tokens.css">
 <link rel="stylesheet" href="/static/landing.css">
 <script type="module" src="/static/landing.js"></script>
 </head>
@@ -26,14 +27,7 @@
 
 <svg class="sprite" aria-hidden="true">
   <symbol id="i-lifeline" viewBox="17 7 36 48"><path d="M22 12V50H46M36 12V34" fill="none" stroke="currentColor" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/><circle class="mark-window" cx="47" cy="21" r="5.5" fill="#F4B740"/></symbol>
-  <symbol id="i-activity" viewBox="0 0 24 24"><path d="M22 12h-2.48a2 2 0 0 0-1.93 1.46l-2.35 8.36a.25.25 0 0 1-.48 0L9.24 2.18a.25.25 0 0 0-.48 0l-2.35 8.36A2 2 0 0 1 4.49 12H2"/></symbol>
   <symbol id="i-bell-off" viewBox="0 0 24 24"><path d="M10.268 21a2 2 0 0 0 3.464 0"/><path d="M17 17H4a1 1 0 0 1-.74-1.673C4.59 13.956 6 12.499 6 8a6 6 0 0 1 .258-1.742"/><path d="m2 2 20 20"/><path d="M8.668 3.01A6 6 0 0 1 18 8c0 2.687.77 4.653 1.707 6.05"/></symbol>
-  <symbol id="i-users" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><path d="M16 3.128a4 4 0 0 1 0 7.744"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><circle cx="9" cy="7" r="4"/></symbol>
-  <symbol id="i-award" viewBox="0 0 24 24"><path d="m15.477 12.89 1.515 8.526a.5.5 0 0 1-.81.47l-3.58-2.687a1 1 0 0 0-1.197 0l-3.586 2.686a.5.5 0 0 1-.81-.469l1.514-8.526"/><circle cx="12" cy="8" r="6"/></symbol>
-  <symbol id="i-stethoscope" viewBox="0 0 24 24"><path d="M11 2v2"/><path d="M5 2v2"/><path d="M5 3H4a2 2 0 0 0-2 2v4a6 6 0 0 0 12 0V5a2 2 0 0 0-2-2h-1"/><path d="M8 15a6 6 0 0 0 12 0v-3"/><circle cx="20" cy="10" r="2"/></symbol>
-  <symbol id="i-cloud-lightning" viewBox="0 0 24 24"><path d="M6 16.326A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 .5 8.973"/><path d="m13 12-3 5h4l-3 5"/></symbol>
-  <symbol id="i-landmark" viewBox="0 0 24 24"><path d="M10 18v-7"/><path d="M11.119 2.205a2 2 0 0 1 1.762 0l7.84 3.846A.5.5 0 0 1 20.5 7h-17a.5.5 0 0 1-.22-.949z"/><path d="M14 18v-7"/><path d="M18 18v-7"/><path d="M3 22h18"/><path d="M6 18v-7"/></symbol>
-  <symbol id="i-file-check" viewBox="0 0 24 24"><path d="M6 22a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h8a2.4 2.4 0 0 1 1.704.706l3.588 3.588A2.4 2.4 0 0 1 20 8v12a2 2 0 0 1-2 2z"/><path d="M14 2v5a1 1 0 0 0 1 1h5"/><path d="m9 15 2 2 4-4"/></symbol>
   <symbol id="i-cloud-snow" viewBox="0 0 24 24"><path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"/><path d="M8 15h.01"/><path d="M8 19h.01"/><path d="M12 17h.01"/><path d="M12 21h.01"/><path d="M16 15h.01"/><path d="M16 19h.01"/></symbol>
 </svg>
 
@@ -93,9 +87,9 @@
       <figcaption>Inogen Rove 6 oxygen concentrator user manual, §8.5 Alarms. With a battery in, the alarm beeps only in the room. Nobody outside it hears.</figcaption>
     </figure>
     <ul class="trust">
-      <li><svg class="icon" aria-hidden="true"><use href="#i-users"/></svg><div><h3>Who built it</h3><p>Samir Bhattarai (hardware and software) and Aadarsha Kunwar (research and agency outreach).</p></div></li>
-      <li><svg class="icon" aria-hidden="true"><use href="#i-award"/></svg><div><h3>Where</h3><p>Built at the USM VOXO Hatchathon 2026, Hattiesburg, Mississippi.</p></div></li>
-      <li><svg class="icon" aria-hidden="true"><use href="#i-stethoscope"/></svg><div><h3>What we heard in Hattiesburg</h3><p>In November 2026 we talked to staff at three Hattiesburg care providers: Covenant Caregivers (non-medical home care), Windham House of Hattiesburg (nursing home) and Alden Pointe (assisted living). None had a system like this, and all three said it would help.</p></div></li>
+      <li><div><h3>Who built it</h3><p>Samir Bhattarai (hardware and software) and Aadarsha Kunwar (research and agency outreach).</p></div></li>
+      <li><div><h3>Where</h3><p>Built at the USM VOXO Hatchathon 2026, Hattiesburg, Mississippi.</p></div></li>
+      <li><div><h3>What we heard in Hattiesburg</h3><p>In November 2026 we talked to staff at three Hattiesburg care providers: Covenant Caregivers (non-medical home care), Windham House of Hattiesburg (nursing home) and Alden Pointe (assisted living). None had a system like this, and all three said it would help.</p></div></li>
     </ul>
   </section>
 
@@ -114,31 +108,31 @@
           <p class="step-time">2:41 AM</p>
           <div class="rule" aria-hidden="true"><span class="rule-dot"></span><svg viewBox="0 0 256 16" preserveAspectRatio="none"><line x1="0" y1="8" x2="256" y2="8"/></svg></div>
           <div class="step-text"><h3>Power drops</h3><p>The unit at the outlet notices in seconds. It runs on its own battery and reports over home Wi-Fi or a phone hotspot.</p></div>
-          <div class="note"><p class="note-top"><svg class="app-icon" aria-hidden="true"><use href="#i-activity"/></svg><span>Lifeline · Agency board</span><span>now</span></p><p class="note-title">Earl B. (synthetic): power out</p><p class="note-body">19 min of backup left. Runs out around 3:00 AM.</p></div>
+          <div class="note"><p class="note-top"><svg class="app-icon" viewBox="17 7 36 48" aria-hidden="true"><use href="#i-lifeline"/></svg><span>Lifeline · Agency board</span><span>now</span></p><p class="note-title">Earl B. (synthetic): power out</p><p class="note-body">19 min of backup left. Runs out around 3:00 AM.</p></div>
         </li>
         <li class="step">
           <p class="step-time">2:41 AM</p>
           <div class="rule" aria-hidden="true"><span class="rule-dot"></span><svg viewBox="0 0 256 16" preserveAspectRatio="none"><line x1="0" y1="8" x2="256" y2="8"/></svg></div>
-          <div class="step-text"><h3>First call goes out</h3><p>A call and a text go to the first person on Earl's list. One tap says "I'm responding".</p></div>
-          <div class="note"><p class="note-top"><svg class="app-icon" aria-hidden="true"><use href="#i-activity"/></svg><span>Lifeline · To Daughter</span><span>now</span></p><p class="note-title">Earl's power is out</p><p class="note-body">His BiPAP runs out around 3:00 AM. Tap if you are going.</p></div>
+          <div class="step-text"><h3>First call goes out</h3><p>A call and a text go to the first person on Earl's list. One tap says “I’m responding”.</p></div>
+          <div class="note"><p class="note-top"><svg class="app-icon" viewBox="17 7 36 48" aria-hidden="true"><use href="#i-lifeline"/></svg><span>Lifeline · To Daughter</span><span>now</span></p><p class="note-title">Earl's power is out</p><p class="note-body">His BiPAP runs out around 3:00 AM. Tap if you are going.</p></div>
         </li>
         <li class="step">
           <p class="step-time">2:43 AM</p>
           <div class="rule" aria-hidden="true"><span class="rule-dot"></span><svg viewBox="0 0 256 16" preserveAspectRatio="none"><defs><linearGradient id="rule-turn" gradientUnits="userSpaceOnUse" x1="0" y1="0" x2="256" y2="0"><stop offset="0" stop-color="#F4B740"/><stop offset="1" stop-color="#D2392F"/></linearGradient></defs><line x1="0" y1="8" x2="256" y2="8"/></svg></div>
           <div class="step-text"><h3>No answer? Next person</h3><p>Lifeline works down the call list until someone takes it. Everyone sees who did.</p></div>
-          <div class="note"><p class="note-top"><svg class="app-icon" aria-hidden="true"><use href="#i-activity"/></svg><span>Lifeline · To on-call nurse</span><span>now</span></p><p class="note-title">Daughter hasn't answered</p><p class="note-body">You're next for Earl B. (synthetic). Runs out around 3:00 AM.</p></div>
+          <div class="note"><p class="note-top"><svg class="app-icon" viewBox="17 7 36 48" aria-hidden="true"><use href="#i-lifeline"/></svg><span>Lifeline · To on-call nurse</span><span>now</span></p><p class="note-title">Daughter hasn't answered</p><p class="note-body">You're next for Earl B. (synthetic). Runs out around 3:00 AM.</p></div>
         </li>
         <li class="step step-alarm">
           <p class="step-time">2:45 AM</p>
           <div class="rule" aria-hidden="true"><span class="rule-dot"></span><svg viewBox="0 0 256 16" preserveAspectRatio="none"><line x1="0" y1="8" x2="256" y2="8"/></svg></div>
           <div class="step-text"><h3>15 min of backup left</h3><p>The board row turns red and county emergency management sees the home, with no phone numbers.</p></div>
-          <div class="note"><p class="note-top"><svg class="app-icon" aria-hidden="true"><use href="#i-activity"/></svg><span>Lifeline · To nurse, county</span><span>now</span></p><p class="note-title">15 min left at Earl B.'s home</p><p class="note-body">Nobody is responding yet. Call 911 if nobody is there. Runs out around 3:00 AM.</p></div>
+          <div class="note"><p class="note-top"><svg class="app-icon" viewBox="17 7 36 48" aria-hidden="true"><use href="#i-lifeline"/></svg><span>Lifeline · To nurse, county</span><span>now</span></p><p class="note-title">15 min left at Earl B.'s home</p><p class="note-body">Nobody is responding yet. Call 911 if nobody is there. Runs out around 3:00 AM.</p></div>
         </li>
         <li class="step step-done">
           <p class="step-time">2:47 AM</p>
           <div class="rule" aria-hidden="true"><span class="rule-dot"></span><svg viewBox="0 0 256 16" preserveAspectRatio="none"><line x1="0" y1="8" x2="256" y2="8"/></svg></div>
-          <div class="step-text"><h3>Someone is on the way</h3><p>The nurse taps "I'm responding". The calls stop, and the record keeps every minute.</p></div>
-          <div class="note"><p class="note-top"><svg class="app-icon" aria-hidden="true"><use href="#i-activity"/></svg><span>Lifeline · To the call list</span><span>now</span></p><p class="note-title">Nurse is on the way</p><p class="note-body">Dana P. (synthetic) responded at 2:47 AM, 6 min after power loss.</p></div>
+          <div class="step-text"><h3>Someone is on the way</h3><p>The nurse taps “I’m responding”. The calls stop, and the record keeps every minute.</p></div>
+          <div class="note"><p class="note-top"><svg class="app-icon" viewBox="17 7 36 48" aria-hidden="true"><use href="#i-lifeline"/></svg><span>Lifeline · To the call list</span><span>now</span></p><p class="note-title">Nurse is on the way</p><p class="note-body">Dana P. (synthetic) responded at 2:47 AM, 6 min after power loss.</p></div>
         </li>
       </ol>
     </div>
@@ -146,35 +140,64 @@
 
   <section class="board" id="board" aria-labelledby="board-title">
     <div class="board-head">
-      <h2 id="board-title" class="split">Sixteen homes go dark at once. Your nurse knows who to call first.</h2>
+      <h2 id="board-title" class="split">Ten homes go dark at once. Your nurse knows who to call first.</h2>
       <p class="lede">Every home ranked by how much backup is left. One tap to respond, call or get directions. Built for the worst night of the year, readable from across the room.</p>
     </div>
     <figure class="board-stage" id="board-stage">
-      <img class="board-shot" src="/static/images/board-v2.webp" srcset="/static/images/board-v2-800.webp 800w, /static/images/board-v2.webp 1440w"
-           sizes="(min-width: 1100px) 900px, 100vw" width="1440" height="1024" decoding="async"
-           alt="The Lifeline agency board during a simulated ice storm: 16 homes without power, 4 under 15 minutes left. Tom K. (synthetic) is expanded with 10:31 of backup left, runs out around 5:25 PM, and Call 911 and I'm responding buttons. A map shows the warning area with a shaped marker for each home.">
+      <img class="board-shot" src="/static/images/board-v3.webp" srcset="/static/images/board-v3-1000.webp 1000w, /static/images/board-v3.webp 1800w"
+           sizes="(min-width: 1100px) 900px, 100vw" width="1440" height="1024" decoding="async" fetchpriority="low"
+           alt="The Lifeline agency board during a simulated ice storm: 10 homes without power. One is under 15 minutes, three have nobody answering and seven have someone responding. Walter G. (synthetic) is first, with 12:11 of backup left and a Call 911 button; claimed homes show a check and who took them. The map marks each home with its state shape.">
       <svg class="board-marks" viewBox="0 0 1280 700" aria-hidden="true">
-        <g class="mark"><rect class="target" x="395" y="114" width="125" height="49" rx="6"/><line class="leader" x1="330" y1="139" x2="395" y2="139"/></g>
-        <g class="mark"><rect class="target" x="414" y="384" width="144" height="70" rx="6"/><line class="leader" x1="330" y1="419" x2="414" y2="419"/></g>
-        <g class="mark"><rect class="target" x="374" y="614" width="402" height="50" rx="6"/><line class="leader" x1="330" y1="639" x2="374" y2="639"/></g>
-        <g class="mark"><circle class="target" cx="1093" cy="302" r="20"/><line class="leader" x1="1093" y1="322" x2="1093" y2="398"/></g>
+        <g class="mark"><rect class="target" x="398" y="141" width="121" height="54" rx="6"/><line class="leader" x1="330" y1="168" x2="398" y2="168"/></g>
+        <g class="mark"><rect class="target" x="381" y="379" width="398" height="51" rx="6"/><line class="leader" x1="330" y1="404" x2="381" y2="404"/></g>
+        <g class="mark"><rect class="target" x="381" y="535" width="398" height="51" rx="6"/><line class="leader" x1="330" y1="561" x2="381" y2="561"/></g>
+        <g class="mark"><circle class="target" cx="1088" cy="259" r="17"/><line class="leader" x1="1088" y1="276" x2="1088" y2="330"/></g>
       </svg>
       <ol class="callouts">
-        <li class="callout"><h3><b>1</b>Under 15 min, counted first</h3><p>The only white cell. Four homes with nobody there yet.</p></li>
-        <li class="callout"><h3><b>2</b>Time left, and the clock time</h3><p>10:31 left, runs out around 5:25 PM. Easy to say on the phone.</p></li>
-        <li class="callout"><h3><b>3</b>Who is on the way</h3><p>A named person and the time they took it. The row keeps its place.</p></li>
-        <li class="callout callout-tag"><h3><b>4</b>Shape for every state</h3><p>"!" under 15 min, ring for no answer, check for responding. Colour is never the only signal.</p></li>
+        <li class="callout"><h3><b>1</b>Under 15 min, counted first</h3><p>The only white cell. One home with nobody there yet.</p></li>
+        <li class="callout"><h3><b>2</b>Time left, then one button</h3><p>12:11 of backup left, and Call 911 sits right beside it.</p></li>
+        <li class="callout"><h3><b>3</b>Who is on the way</h3><p>The person who took it and when. Nobody calls twice.</p></li>
+        <li class="callout callout-tag"><h3><b>4</b>Shape for every state</h3><p>“!” under 15 min, ring for no answer, check for responding. Colour is never the only signal.</p></li>
       </ol>
     </figure>
+  </section>
+
+  <section class="tour" aria-labelledby="tour-title">
+    <h2 id="tour-title" class="split">The family and the county see the same night, each from their side.</h2>
+    <div class="tour-row">
+      <figure class="tour-shot tour-phone">
+        <img src="/static/images/family-v3.webp" width="760" height="1240" loading="lazy" decoding="async"
+             alt="The family page: Tom K.’s home (synthetic). Power is out since 11:38 PM, 54:36 of BiPAP backup left, runs out around 12:38 AM. Below it, a red card: If Tom’s breathing is in danger, call 911 now, with a Call 911 button.">
+      </figure>
+      <div class="tour-copy">
+        <h3>The family gets a text and a link, not an app.</h3>
+        <p>The first person on the list hears within seconds. The link opens a page with the time left, the clock time it runs out, a 911 button, and one tap that tells everyone else they are on the way.</p>
+        <figure class="sms">
+          <figcaption>The text Tom’s grandson gets (synthetic patient):</figcaption>
+          <blockquote><p>Lifeline alert: Power is out at Tom K. (synthetic)’s home, 177 Main St, Richton, MS. BiPAP machine backup about 60 min. Reply OK 6982 if you’re responding. Live status: [family link]</p></blockquote>
+        </figure>
+      </div>
+    </div>
+    <div class="tour-row tour-row-flip">
+      <div class="tour-copy">
+        <h3>The county sees the list, without phone numbers.</h3>
+        <p>Emergency management gets every home without power, most urgent first, read only. The storm warning is said once, not on every row, and only the homes under 15 minutes are red.</p>
+      </div>
+      <figure class="tour-shot">
+        <img src="/static/images/county-v3.webp" srcset="/static/images/county-v3-900.webp 900w, /static/images/county-v3.webp 1600w"
+             sizes="(min-width: 1024px) 760px, 100vw" width="1600" height="1000" loading="lazy" decoding="async"
+             alt="The county view: 10 homes without power, with 1 under 15 minutes of backup, 3 with nobody responding yet and 7 with someone responding. An Ice Storm Warning banner sits above a table where Walter G. (synthetic) is first with 9 minutes left and nobody responding yet.">
+      </figure>
+    </div>
   </section>
 
   <section class="storm" aria-labelledby="storm-title">
     <div class="storm-copy">
       <h2 id="storm-title" class="split">It warns you the night before the storm.</h2>
       <ul class="features">
-        <li><span class="badge"><svg class="icon" aria-hidden="true"><use href="#i-cloud-lightning"/></svg></span><div><h3>Storm Watch</h3><p>National Weather Service warnings over every home on the map, and a call-first list of the patients with the least backup.</p></div></li>
-        <li><span class="badge"><svg class="icon" aria-hidden="true"><use href="#i-landmark"/></svg></span><div><h3>County view</h3><p>Emergency management sees who has no power and how long their backup lasts, with no phone numbers.</p></div></li>
-        <li><span class="badge"><svg class="icon" aria-hidden="true"><use href="#i-file-check"/></svg></span><div><h3>The record you owe</h3><p>Every outage, alert and response time, exported for your emergency-preparedness file.</p></div></li>
+        <li><div><h3>Storm Watch</h3><p>National Weather Service warnings over every home on the map, and a call-first list of the patients with the least backup.</p></div></li>
+        <li><div><h3>County view</h3><p>Emergency management sees who has no power and how long their backup lasts, with no phone numbers.</p></div></li>
+        <li><div><h3>The record you owe</h3><p>Every outage, alert and response time, exported for your emergency-preparedness file.</p></div></li>
       </ul>
     </div>
     <figure class="storm-visual" id="storm-visual">
@@ -225,12 +248,13 @@
   </section>
 
   <section class="pilot" id="pilot" aria-labelledby="pilot-title">
-    <span class="window-glow" aria-hidden="true"></span>
-    <h2 id="pilot-title" class="split">Let's keep one county's lights on, together.</h2>
-    <p class="lede">One Pine Belt home health agency. [20] patients. [60] days. We measure minutes from power loss to a person responding, and you keep the record.</p>
-    <div class="cta-row">
-      <a class="btn btn-primary btn-large" id="pilot-cta" href="mailto:samirbhattarai135@gmail.com?subject=Lifeline%20pilot">Book a 60-day pilot</a>
-      <a class="btn btn-outline btn-large" href="/login">See the live board</a>
+    <div class="pilot-card">
+      <h2 id="pilot-title" class="split">When the power goes out in one county, someone will know.</h2>
+      <p class="lede">One Pine Belt home health agency. [20] patients. [60] days. We measure minutes from power loss to a person responding, and you keep the record.</p>
+      <div class="cta-row">
+        <a class="btn btn-primary btn-large" id="pilot-cta" href="mailto:samirbhattarai135@gmail.com?subject=Lifeline%20pilot">Book a 60-day pilot</a>
+        <a class="btn btn-outline btn-large" href="/login">See the live board</a>
+      </div>
     </div>
   </section>
 </main>

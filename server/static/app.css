@@ -1,33 +1,6 @@
 /* Hallmark · scope: app UI · tone: calm clinical · anchor hue: alarm red 27 on cool neutral 170 */
 @import url("tokens.css");
 
-/* App v2 palette (UIdesign.pen variables), layered over tokens.css: the same meanings, the design's exact values.
-   Red only for danger; amber only for "a person is coming"; green only for "power on", small and quiet. */
-:root {
-  --color-paper: #F3F6F4;
-  --color-paper-raised: #FFFFFF;
-  --color-paper-sunk: #E6EDEA;
-  --color-ink: #16252F;
-  --color-ink-muted: #4D5F69;
-  --color-rule: #D5DFDB;
-  --color-rule-strong: #B9C6C1;
-  --color-out: #D2392F;
-  --color-out-ink: #A92A22;
-  --color-out-wash: #D2392F14;
-  --color-out-line: #D2392F40;
-  --color-acked: #F4B740;
-  --color-acked-deep: #C9891C;
-  --color-acked-ink: #8A5A0C;
-  --color-acked-wash: #F4B74026;
-  --color-storm: #C9861A;
-  --color-on: #3FA37A;
-  --color-on-ink: #FFFFFF;
-  --color-on-text: #2B7A59;
-  --color-quiet: #7A8A93;
-  --color-quiet-wash: #7A8A931F;
-  --font-display: "Bricolage Grotesque", "Atkinson Hyperlegible Next", system-ui, sans-serif;
-}
-
 /* ---- base ---------------------------------------------------------------- */
 *, *::before, *::after { box-sizing: border-box; }
 html, body { overflow-x: clip; }
@@ -1056,3 +1029,8 @@ dialog.panel { width: min(46rem, 100vw); background: var(--color-paper); }
   .topbar .views { order: 10; flex: 1 1 100%; }
   .board { height: calc(100dvh - 97px); }
 }
+
+/* v3: one shape language with the landing page (tokens.css): controls 10, chips 6, cards 14, media 20. */
+.btn, .btn-primary, .input, .pill-select, .filter-field { border-radius: var(--radius-md); }
+.chip-state, .tag { border-radius: var(--radius-sm); }
+.action-card, .data-table, .kpi, .chart-card, .staff-add, .status-card, .card-911, .account-form { border-radius: var(--radius-lg); }

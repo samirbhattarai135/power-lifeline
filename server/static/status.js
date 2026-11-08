@@ -159,7 +159,7 @@ function render(unit) {
   lastStatus = snapshot;
   const urgent = unit.status === "outage" || unit.status === "offline";
   section.replaceChildren(...[
-    el("h1", {}, `${shortName(unit)}'s home`),
+    el("h1", {}, `${shortName(unit)}’s home`),
     statusCard(unit),
     urgent ? card911(unit) : null,
     whoKnows(unit),

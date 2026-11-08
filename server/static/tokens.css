@@ -1,34 +1,50 @@
-/* Hallmark · scope: app UI (platform + family status + login) · tone: calm clinical
- * theme: custom · vibe: "quiet clinic, one alarm colour" · paper oklch(97.4% 0.007 170)
- * accent: alarm oklch(53% 0.19 27) reserved for power-out only · type: Atkinson Hyperlegible Next + Mono
- * axes: light / humanist-sans / warm-alarm-on-cool-neutral
- * pre-emit critique: P4 H5 E4 S5 R5 V4
+/* Lifeline tokens: the one source for the landing page, the app, the county view and the family page.
+ * Values are the UIdesign.pen variables (v2). Every colour means one thing:
+ *   red    = a patient is in danger (power out, under 15 min, no answer)
+ *   amber  = a person is coming (responding, the window light, the brand light)
+ *   green  = power on, small and quiet
+ *   night  = the problem; paper = the answer
  */
 :root {
   /* paper and ink */
-  --color-paper: oklch(97.4% 0.007 170);
-  --color-paper-raised: oklch(99.4% 0.003 170);
-  --color-paper-sunk: oklch(94.6% 0.01 175);
-  --color-ink: oklch(29% 0.03 225);
-  --color-ink-muted: oklch(50% 0.02 220);
-  --color-rule: oklch(88.5% 0.012 190);
-  --color-rule-strong: oklch(78% 0.015 200);
+  --color-paper: #F3F6F4;
+  --color-paper-raised: #FFFFFF;
+  --color-paper-sunk: #E6EDEA;
+  --color-ink: #16252F;
+  --color-ink-muted: #4D5F69;
+  --color-rule: #D5DFDB;
+  --color-rule-strong: #B9C6C1;
+
+  /* night */
+  --color-night: #0C1821;
+  --color-night-2: #132430;
+  --color-night-line: #24394A;
+  --color-on-night: #EEF3F1;
+  --color-on-night-muted: #9DB1BB;
+  --color-on-night-faint: #8DA2AE;
 
   /* states: each colour means exactly one thing */
-  --color-out: oklch(53% 0.19 27);
-  --color-out-wash: oklch(95.5% 0.025 27);
-  --color-on: oklch(52% 0.1 160);
-  --color-on-wash: oklch(95.5% 0.025 160);
-  --color-acked: oklch(66% 0.14 70);
-  --color-acked-wash: oklch(95.5% 0.04 80);
-  --color-quiet: oklch(62% 0.01 220);
-  --color-quiet-wash: oklch(94% 0.005 220);
-  --color-focus: oklch(55% 0.17 250);
-  --color-on-ink: oklch(99% 0 0);
-  --color-shadow: oklch(29% 0.03 225 / 0.14);
-  --color-scrim: oklch(29% 0.03 225 / 0.28);
+  --color-out: #D2392F;
+  --color-out-ink: #A92A22;
+  --color-out-wash: #D2392F14;
+  --color-out-line: #D2392F40;
+  --color-acked: #F4B740;
+  --color-acked-deep: #C9891C;
+  --color-acked-ink: #8A5A0C;
+  --color-acked-wash: #F4B74026;
+  --color-storm: #C9861A;
+  --color-on: #3FA37A;
+  --color-on-text: #2B7A59;
+  --color-on-wash: #3FA37A1F;
+  --color-quiet: #7A8A93;
+  --color-quiet-wash: #7A8A931F;
+  --color-focus: #2F6FDB;
+  --color-on-ink: #FFFFFF;
+  --color-shadow: #16252F24;
+  --color-scrim: #16252F47;
 
   /* type */
+  --font-display: "Bricolage Grotesque", "Atkinson Hyperlegible Next", system-ui, sans-serif;
   --font-body: "Atkinson Hyperlegible Next", system-ui, sans-serif;
   --font-code: "Atkinson Hyperlegible Mono", ui-monospace, monospace;
   --text-sm: 0.875rem;
@@ -50,11 +66,18 @@
   --space-2xl: 3rem;
   --space-3xl: 4.5rem;
 
+  /* shape: controls 10, chips 6, cards 14, media 20 */
+  --radius-xs: 4px;
   --radius-sm: 6px;
   --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
   --rule-hair: 1px solid var(--color-rule);
+  --shadow-card: 0 1px 2px #16252F0F, 0 8px 24px #16252F14;
+  --shadow-pop: 0 12px 32px #16252F26;
+  --shadow-media: 0 2px 6px #16252F14, 0 24px 60px #16252F2E;
 
-  /* motion */
+  /* motion: 120 ms for presses, 220 ms for panels; nothing bounces */
   --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
   --ease-in: cubic-bezier(0.55, 0, 1, 0.45);
   --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
