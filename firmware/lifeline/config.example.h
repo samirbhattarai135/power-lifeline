@@ -3,12 +3,20 @@
 
 #define WIFI_SSID      "your-wifi-or-phone-hotspot"
 #define WIFI_PASSWORD  "your-password"
+// Optional backup network (2.4 GHz). The unit joins whichever saved network is strongest, so on
+// demo day put the phone hotspot here (or first) next to the venue Wi-Fi. "" = no backup.
+#define WIFI_SSID_2      ""
+#define WIFI_PASSWORD_2  ""
 // Enterprise Wi-Fi only (eduroam, campus networks): WIFI_SSID is the network name (e.g. "eduroam"),
 // this is your sign-in username, and WIFI_PASSWORD is that account's password. Leave it out for home Wi-Fi or a hotspot.
 // #define WIFI_EAP_USERNAME "you@school.edu"
 
-// Raspberry Pi / laptop running server/app.py, reachable from the ESP32.
-#define SERVER_URL     "http://192.168.1.50:8080/api/report"
+// Where server/app.py runs. Hosted (HTTPS, certificate checked against the built-in root CA list):
+#define SERVER_URL     "https://your-app.fly.dev/api/report"
+// Laptop on the same Wi-Fi/hotspot instead (plain HTTP, local fallback only):
+// #define SERVER_URL  "http://192.168.1.50:8080/api/report"
+// Use https:// for the hosted server: it redirects http:// and the unit does not follow redirects.
+// A server address saved from the setup screen overrides this one (see docs/ops/demo-day.md).
 
 // Must match device_id / device_token in server/patients.json.
 #define DEVICE_ID      "unit-01"
