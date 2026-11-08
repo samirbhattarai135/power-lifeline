@@ -8,6 +8,57 @@ const motionAllowed = () => matchMedia("(prefers-reduced-motion: no-preference)"
 // Only things that have not been seen yet may start hidden; anything already on screen stays put.
 const notYetSeen = (node) => node.getBoundingClientRect().top > innerHeight;
 
+// ---- header: surface, current section, and the narrow-screen menu ----------------------------
+
+const header = document.querySelector(".site-header");
+const menuToggle = header.querySelector(".menu-toggle");
+const navLinks = [...header.querySelectorAll('.header-nav a[href^="#"]')];
+const evidence = document.getElementById("evidence");
+
+function setMenu(open, { focusToggle = false } = {}) {
+  header.classList.toggle("menu-open", open);
+  menuToggle.setAttribute("aria-expanded", String(open));
+  if (focusToggle) menuToggle.focus();
+}
+menuToggle.addEventListener("click", () => {
+  const open = menuToggle.getAttribute("aria-expanded") !== "true";
+  setMenu(open);
+  if (open) header.querySelector(".header-nav a")?.focus();
+});
+header.querySelector(".header-nav").addEventListener("click", (event) => { if (event.target.closest("a")) setMenu(false); });
+document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && header.classList.contains("menu-open")) setMenu(false, { focusToggle: true });
+});
+document.addEventListener("click", (event) => {
+  if (header.classList.contains("menu-open") && !header.contains(event.target)) setMenu(false);
+});
+matchMedia("(min-width: 901px)").addEventListener("change", (event) => { if (event.matches) setMenu(false); });
+
+// Which surface sits under the bar (night until the evidence section fades to paper),
+// and which section the reader is in, marked with aria-current="location".
+function updateHeader() {
+  const top = scrollY < 8;
+  header.toggleAttribute("data-top", top);
+  // The evidence section ends in its short dawn; the bar turns to paper halfway through it.
+  const surface = evidence.getBoundingClientRect().bottom - 80 > header.offsetHeight ? "night" : "paper";
+  if (header.dataset.surface !== surface) header.dataset.surface = surface;
+  const probe = innerHeight * 0.35;
+  let current = null;
+  for (const link of navLinks) {
+    const section = document.querySelector(link.hash);
+    const box = section?.getBoundingClientRect();
+    if (box && box.top <= probe && box.bottom > probe) current = link;
+  }
+  for (const link of navLinks) {
+    if (link === current) link.setAttribute("aria-current", "location");
+    else link.removeAttribute("aria-current");
+  }
+}
+let headerFrame = 0;
+addEventListener("scroll", () => { cancelAnimationFrame(headerFrame); headerFrame = requestAnimationFrame(updateHeader); }, { passive: true });
+addEventListener("resize", updateHeader);
+updateHeader();
+
 // ---- one-shot CSS reveals: arm while off-screen, play once in view ------------------------------
 
 function playOnceInView(node, threshold) {

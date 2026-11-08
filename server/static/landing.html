@@ -31,15 +31,24 @@
   <symbol id="i-cloud-snow" viewBox="0 0 24 24"><path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"/><path d="M8 15h.01"/><path d="M8 19h.01"/><path d="M12 17h.01"/><path d="M12 21h.01"/><path d="M16 15h.01"/><path d="M16 19h.01"/></symbol>
 </svg>
 
-<header class="nav" id="top">
-  <a class="brand" href="/" aria-label="Lifeline home"><svg class="brand-mark" viewBox="17 7 36 48" aria-hidden="true"><use href="#i-lifeline"/></svg>Lifeline</a>
-  <nav aria-label="Sections">
-    <a href="#how">How it works</a>
-    <a href="#board">The board</a>
-    <a href="#agencies">For agencies</a>
-    <a href="#evidence">Evidence</a>
-  </nav>
-  <a class="btn btn-primary btn-small" href="#pilot">Book a pilot</a>
+<header class="site-header" id="top" data-surface="night" data-top>
+  <div class="header-inner">
+    <a class="brand" href="/" aria-label="Lifeline home"><svg class="brand-mark" viewBox="17 7 36 48" aria-hidden="true"><use href="#i-lifeline"/></svg>Lifeline</a>
+    <nav class="header-nav" id="header-nav" aria-label="Main">
+      <ul>
+        <li><a href="#how">How it works</a></li>
+        <li><a href="#board">The board</a></li>
+        <li><a href="#agencies">For agencies</a></li>
+        <li><a href="#evidence">Evidence</a></li>
+        <li class="nav-signin"><a href="/login">Sign in</a></li>
+      </ul>
+    </nav>
+    <div class="header-actions">
+      <a class="header-signin" href="/login">Sign in</a>
+      <a class="btn btn-primary btn-small" href="#pilot">Book a pilot</a>
+      <button class="menu-toggle" type="button" aria-expanded="false" aria-controls="header-nav"><span class="menu-icon" aria-hidden="true"></span>Menu</button>
+    </div>
+  </div>
 </header>
 
 <main id="main">
@@ -164,7 +173,7 @@
 
   <section class="tour" aria-labelledby="tour-title">
     <h2 id="tour-title" class="split">The family and the county see the same night, each from their side.</h2>
-    <div class="tour-row">
+    <div class="tour-row" id="family">
       <figure class="tour-shot tour-phone">
         <img src="/static/images/family-v3.webp" width="760" height="1240" loading="lazy" decoding="async"
              alt="The family page: Tom K.’s home (synthetic). Power is out since 11:38 PM, 54:36 of BiPAP backup left, runs out around 12:38 AM. Below it, a red card: If Tom’s breathing is in danger, call 911 now, with a Call 911 button.">
@@ -178,7 +187,7 @@
         </figure>
       </div>
     </div>
-    <div class="tour-row tour-row-flip">
+    <div class="tour-row tour-row-flip" id="county">
       <div class="tour-copy">
         <h3>The county sees the list, without phone numbers.</h3>
         <p>Emergency management gets every home without power, most urgent first, read only. The storm warning is said once, not on every row, and only the homes under 15 minutes are red.</p>
@@ -191,7 +200,7 @@
     </div>
   </section>
 
-  <section class="storm" aria-labelledby="storm-title">
+  <section class="storm" id="storm" aria-labelledby="storm-title">
     <div class="storm-copy">
       <h2 id="storm-title" class="split">It warns you the night before the storm.</h2>
       <ul class="features">
@@ -236,7 +245,7 @@
         <figcaption>42 CFR 484.102(b)(3), Medicare home health emergency preparedness</figcaption>
       </figure>
     </div>
-    <div class="ledger">
+    <div class="ledger" id="pricing">
       <h3 class="ledger-title">What a pilot asks of you</h3>
       <dl>
         <div class="line"><dt>~$50</dt><dd><b>per unit, estimated</b>Plugs into any outlet beside the machine. Battery-backed, reports in seconds.</dd></div>
@@ -260,8 +269,53 @@
 </main>
 
 <footer class="site-footer">
-  <a class="brand" href="#top"><svg class="brand-mark" viewBox="17 7 36 48" aria-hidden="true"><use href="#i-lifeline"/></svg>Lifeline</a>
-  <p>Built for the USM VOXO Hatchathon 2026. Every patient in our demos is synthetic.</p>
+  <div class="footer-inner">
+    <div class="footer-brand">
+      <a class="brand" href="/"><svg class="brand-mark" viewBox="17 7 36 48" aria-hidden="true"><use href="#i-lifeline"/></svg>Lifeline</a>
+      <p>Power-loss alerts for people at home on oxygen, ventilators and dialysis, built in Hattiesburg for Pine Belt home health agencies.</p>
+    </div>
+    <nav class="footer-cols" aria-label="Footer">
+      <div>
+        <h2 class="footer-h">Product</h2>
+        <ul>
+          <li><a href="#how">How it works</a></li>
+          <li><a href="#board">The board</a></li>
+          <li><a href="#storm">Storm Watch</a></li>
+          <li><a href="#county">County view</a></li>
+          <li><a href="#family">Family page</a></li>
+        </ul>
+      </div>
+      <div>
+        <h2 class="footer-h">For agencies</h2>
+        <ul>
+          <li><a href="#pilot">Book a 90-day pilot</a></li>
+          <li><a href="#pricing">Pricing estimates</a></li>
+          <li><a href="https://www.ecfr.gov/current/title-42/section-484.102" rel="noopener">42 CFR 484.102 (eCFR)</a></li>
+        </ul>
+      </div>
+      <div>
+        <h2 class="footer-h">Resources</h2>
+        <ul>
+          <li><a href="https://empowerprogram.hhs.gov/about-empowermap.html" rel="noopener">HHS emPOWER</a></li>
+          <li><a href="https://www.supertalk.fm/over-150000-mississippians-remain-without-power-after-winter-storm-fern/" rel="noopener">SuperTalk Mississippi, Winter Storm Fern</a></li>
+          <li><a href="https://www.manualslib.com/manual/2944511/Inogen-Rove-6.html?page=29" rel="noopener">Inogen Rove 6 manual, §8.5 Alarms</a></li>
+          <li><a href="/login">Sign in</a></li>
+        </ul>
+      </div>
+      <div>
+        <h2 class="footer-h">Contact</h2>
+        <address>
+          <a href="mailto:samirbhattarai135@gmail.com">samirbhattarai135@gmail.com</a><br>
+          Hattiesburg, Mississippi
+        </address>
+      </div>
+    </nav>
+  </div>
+  <div class="footer-bottom">
+    <p>© 2026 Lifeline</p>
+    <p>Built at the USM VOXO Hatchathon 2026</p>
+    <p>Every patient in our demos is synthetic.</p>
+  </div>
 </footer>
 </body>
 </html>

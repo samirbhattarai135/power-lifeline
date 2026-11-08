@@ -56,13 +56,8 @@ section > * { max-width: var(--wide); margin-inline: auto; }
 .btn-outline.btn-large { font-weight: 400; padding: 0 28px; }
 
 /* ---- nav: part of the hero, not sticky ------------------------------------------------------ */
-.nav { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 14px var(--pad);
-       background: var(--night); max-width: calc(var(--wide) + 2 * var(--pad)); margin-inline: auto; }
 .brand { display: inline-flex; align-items: center; gap: 8px; font: 700 20px/1 var(--font-display); text-decoration: none; color: var(--on-night); }
 .brand .icon { width: 20px; height: 20px; color: var(--window); }
-.nav nav { display: none; gap: 36px; }
-.nav nav a { color: var(--on-night-muted); text-decoration: none; font-size: 15px; }
-.nav nav a:hover { color: var(--on-night); }
 
 /* ---- hero ------------------------------------------------------------------------------ */
 .hero { display: flex; flex-direction: column; padding: 0 0 48px; }
@@ -89,10 +84,7 @@ section > * { max-width: var(--wide); margin-inline: auto; }
 }
 
 @media (min-width: 900px) {
-  .nav { padding-top: 32px; padding-bottom: 0; }
-  .nav nav { display: flex; }
   body { background: radial-gradient(130% 140% at 72% 55%, #1C3242 0%, var(--night) 62%) top / 100% 1108px no-repeat, var(--night); }
-  .nav { background: none; }
   .hero { display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, 448px); column-gap: 72px; align-items: center;
           padding: 64px var(--pad) 88px; max-width: calc(var(--wide) + 2 * var(--pad)); margin-inline: auto; }
   .hero h1, .hero-side { order: 0; }
@@ -473,3 +465,87 @@ section > * { max-width: var(--wide); margin-inline: auto; }
 /* At 1024 the five steps are 182 px wide: their content must wrap inside the column, never widen it. */
 @media (min-width: 1024px) { .step { grid-template-columns: minmax(0, 1fr); } .note { min-width: 0; } }
 .pilot > .pilot-card { max-width: var(--wide); }
+
+/* ======================================================================== */
+/* Header: sticky, transparent over the hero, then a surface that matches     */
+/* the section beneath it (night or paper). Footer: multi-column on paper.    */
+/* ======================================================================== */
+html { scroll-padding-top: 80px; }
+.skip { z-index: 100; }
+.site-header { position: sticky; top: 0; z-index: 50; color: var(--on-night); }
+.header-inner { display: flex; align-items: center; gap: 20px; height: 64px; max-width: calc(var(--wide) + 2 * var(--pad)); margin: 0 auto; padding-inline: var(--pad); }
+.site-header .brand { color: inherit; margin-right: auto; }
+.site-header .brand-mark { color: inherit; }
+.header-nav ul { list-style: none; margin: 0; padding: 0; }
+.header-nav a, .header-signin { color: var(--on-night-muted); text-decoration: none; font-size: 15px; border-radius: var(--radius-sm); }
+.header-nav a:hover, .header-signin:hover { color: var(--on-night); }
+.header-nav a[aria-current] { color: var(--on-night); text-decoration: underline; text-decoration-color: var(--window); text-decoration-thickness: 2px; text-underline-offset: 8px; }
+.header-actions { display: flex; align-items: center; gap: 16px; }
+.header-signin { white-space: nowrap; }
+.menu-toggle { display: none; align-items: center; gap: 8px; min-height: 44px; padding: 0 14px; border: 0; border-radius: var(--radius-md); background: transparent; color: inherit;
+  font: 700 15px/1 var(--font-body); cursor: pointer; box-shadow: inset 0 0 0 1.5px currentColor; }
+.menu-icon { display: block; width: 16px; height: 2px; margin-block: 5px; background: currentColor; border-radius: 1px; box-shadow: 0 -5px 0 currentColor, 0 5px 0 currentColor; }
+
+/* After the first scroll the header gets a surface. Night over the hero and evidence, paper below. */
+.site-header:not([data-top]) { background: color-mix(in oklab, var(--night) 86%, transparent); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); box-shadow: 0 1px 0 var(--night-line); }
+.site-header[data-surface="paper"]:not([data-top]) { background: color-mix(in oklab, var(--paper) 90%, transparent); box-shadow: 0 1px 0 var(--paper-line); color: var(--ink); }
+.site-header[data-surface="paper"] .header-nav a, .site-header[data-surface="paper"] .header-signin { color: var(--ink-muted); }
+.site-header[data-surface="paper"] .header-nav a:hover, .site-header[data-surface="paper"] .header-signin:hover,
+.site-header[data-surface="paper"] .header-nav a[aria-current] { color: var(--ink); }
+.site-header[data-surface="paper"] .header-nav a[aria-current] { text-decoration-color: var(--color-acked-deep); }
+.site-header[data-surface="paper"] :focus-visible { outline-color: var(--color-focus); }
+@media (prefers-reduced-motion: no-preference) {
+  .site-header { transition: background-color var(--dur-base) var(--ease-out), box-shadow var(--dur-base) var(--ease-out), color var(--dur-base) var(--ease-out); }
+}
+
+/* Wide: logo left, nav centre, sign in and the pilot button right. */
+@media (min-width: 901px) {
+  .header-inner { display: grid; grid-template-columns: 1fr auto 1fr; }
+  .header-nav ul { display: flex; gap: 28px; }
+  .nav-signin { display: none; }
+  .header-actions { justify-self: end; }
+}
+@media (min-width: 901px) and (max-width: 1100px) { .header-nav ul { gap: 20px; } .header-nav a, .header-signin { font-size: 14px; } }
+
+/* Narrow: logo, the pilot button and a Menu button that discloses the nav as a panel under the bar.
+   Without JS there is no button and the links simply wrap under the logo. */
+@media (max-width: 900px) {
+  .header-signin { display: none; }
+  .header-nav ul { display: flex; flex-wrap: wrap; gap: 4px 18px; }
+  .js .menu-toggle { display: inline-flex; }
+  .js .header-nav { display: none; position: absolute; left: 0; right: 0; top: 100%; padding: 8px var(--pad) 16px;
+    background: var(--night); box-shadow: 0 1px 0 var(--night-line), 0 16px 32px #0C182166; }
+  .js .site-header[data-surface="paper"] .header-nav { background: var(--paper); box-shadow: 0 1px 0 var(--paper-line), 0 16px 32px #16252F1F; }
+  .js .site-header.menu-open .header-nav { display: block; }
+  .js .header-nav ul { display: grid; gap: 0; }
+  .js .header-nav a { display: flex; align-items: center; min-height: 48px; font-size: 17px; border-radius: 0; border-bottom: 1px solid var(--night-line); }
+  .js .site-header[data-surface="paper"] .header-nav a { border-bottom-color: var(--paper-line); }
+  .js .header-nav li:last-child a { border-bottom: 0; }
+  .js .site-header.menu-open { background: var(--night); }
+  .js .site-header.menu-open[data-surface="paper"] { background: var(--paper); }
+  .header-inner { gap: 10px; }
+}
+@media (max-width: 380px) { .header-actions .btn-small { padding-inline: 12px; font-size: 14px; } }
+
+/* Footer: the brand line, three link columns and contact, then one quiet bottom bar. */
+.site-footer { display: block; background: var(--paper); color: var(--ink-muted); border-top: 1px solid var(--paper-line); padding: 56px var(--pad) 0; font-size: 15px; }
+.footer-inner { display: grid; gap: 40px; max-width: var(--wide); margin: 0 auto; }
+.footer-brand { display: grid; gap: 12px; align-content: start; max-width: 30rem; }
+.footer-brand .brand { color: var(--ink); justify-self: start; }
+.footer-brand p { line-height: 1.55; }
+.footer-cols { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 32px 24px; }
+.footer-h { font: 700 13px/1.2 var(--font-body); letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink); margin: 0 0 12px; }
+.footer-cols ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.footer-cols a { color: var(--ink-muted); text-decoration: none; display: inline-block; padding-block: 6px; line-height: 1.35; }
+.footer-cols a:hover { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; }
+.footer-cols address { font-style: normal; line-height: 1.8; }
+.footer-cols address a { padding-block: 0; }
+.footer-bottom { display: flex; flex-wrap: wrap; gap: 6px 24px; max-width: var(--wide); margin: 48px auto 0; padding: 20px 0 32px; border-top: 1px solid var(--paper-line); font-size: 14px; }
+.footer-bottom p:last-child { margin-left: auto; }
+.site-footer :focus-visible { outline-color: var(--color-focus); }
+@media (min-width: 900px) {
+  .footer-inner { grid-template-columns: minmax(0, 1.2fr) minmax(0, 3fr); gap: 64px; }
+  .footer-cols { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+}
+@media (max-width: 640px) { .footer-bottom p:last-child { margin-left: 0; } }
+.footer-cols a { overflow-wrap: anywhere; }
