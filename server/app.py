@@ -952,11 +952,14 @@ def main() -> None:
     # Only homes not yet placed in a county are looked up, so a short interval costs nothing once they are.
     threading.Thread(target=run_every, args=(lifeline.refresh_county_figures, stop, 600, "emPOWER county lookup"),
                      daemon=True, name="empower").start()
-    server = ThreadingHTTPServer(("0.0.0.0", port), Handler)
+    # Behind a reverse proxy on the same host (the VM's Caddy), bind to loopback so nobody can reach the
+    # app directly and forge the client-address header the proxy would otherwise overwrite.
+    bind = os.environ.get("LIFELINE_BIND", "0.0.0.0")
+    server = ThreadingHTTPServer((bind, port), Handler)
     # Hosts and `docker stop` send SIGTERM; take the same clean exit as Ctrl-C so queued saves finish.
     signal.signal(signal.SIGTERM, signal.default_int_handler)
-    log.info("Lifeline on http://0.0.0.0:%d · storage: %s · %d patients · %d open incidents restored · storm watch %s",
-             port, backend_name, len(monitor.patients()), len(open_incidents), os.environ.get("LIFELINE_STORM_WATCH", "on"))
+    log.info("Lifeline on http://%s:%d · storage: %s · %d patients · %d open incidents restored · storm watch %s",
+             bind, port, backend_name, len(monitor.patients()), len(open_incidents), os.environ.get("LIFELINE_STORM_WATCH", "on"))
     try:
         server.serve_forever()
     except KeyboardInterrupt:

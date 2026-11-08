@@ -44,7 +44,8 @@ SETTINGS = {
 # docs/pitch/demo-script.md. Assume-power lets the one real unit run among synthetic homes that never report.
 STAGE_DEMO = {"ESCALATE_AFTER_SECONDS": "12", "LIFELINE_STORM_WATCH": "demo", "LIFELINE_DEMO_ASSUME_POWER": "1"}
 # The VM: Caddy on the same machine proxies 443 to 8080 and overwrites X-Real-IP with the caller's address.
-VM_SETTINGS = {"PORT": "8080", "LIFELINE_CLIENT_IP_HEADER": "X-Real-IP"}
+# Caddy on the same VM overwrites X-Real-IP; loopback-only bind means only Caddy can set it.
+VM_SETTINGS = {"PORT": "8080", "LIFELINE_BIND": "127.0.0.1", "LIFELINE_CLIENT_IP_HEADER": "X-Real-IP"}
 APP_SERVICE_ONLY = ("WEBSITES_PORT", "SCM_DO_BUILD_DURING_DEPLOYMENT")
 
 # Copied from server/.env when present. LIFELINE_PUBLIC_URL is not: in .env it is the laptop's address.
