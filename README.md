@@ -26,7 +26,9 @@ wall ──5 V USB adapter──▶ ESP32 (on its own battery)
 |---|---|---|---|
 | Power unit | `POST /api/report` | its own unit token | report wall power on/off |
 | Family | `/s/<link>` from the alert text | private per-patient link | see that one patient's power, backup left, who was alerted; tap "I'm responding" |
-| Agency staff | `/` | email + password | live board and map, "We're responding", add/edit/remove patients, unit tokens, rotate family links |
+| Agency staff | `/` | email + password, invited by an admin | by role: **admin** (everything, including Staff), **nurse** (board, respond, patients and call lists), **viewer** (board and history, no phone numbers) |
+| County emergency management | `/county` | email + password, role **county** | read-only list of homes without power and their backup left; no phone numbers, tokens or family links |
+| Anyone | `/` signed out | none | the public landing page |
 
 The family page never shows other patients, unit tokens, staff emails or phone numbers.
 A leaked family link can be replaced from the platform ("Make a new family link").
@@ -35,7 +37,7 @@ A leaked family link can be replaced from the platform ("Make a new family link"
 
 ```bash
 cd server
-python3 test_domain.py                      # 20 tests, stdlib only
+python3 -m unittest test_domain             # 117 tests, stdlib only
 cp patients.example.json patients.json      # 3 synthetic patients
 LIFELINE_ADMIN_PASSWORD=pick-something-long ESCALATE_AFTER_SECONDS=20 python3 app.py
 ```
@@ -59,9 +61,19 @@ Python 3.10+, no packages to install. Settings can live in `server/.env` (see `.
 2. **SQL Editor → New query**: paste `supabase/migrations/001_patients.sql` and run it. It creates the
    `patients` table with database-level checks and turns on row level security with **no** policies,
    so the public (anon/publishable) key can't read or write it. Only the server's secret key can.
+   Then run `supabase/migrations/002_outages.sql` the same way. It creates the `outages` table
+   (power outages and silent units) behind the same lockdown. The server saves every alert,
+   escalation and acknowledgment there, so a restart resumes escalation instead of re-alerting,
+   and the History page and CSV report read from it.
+   Then run `003_storm_watch.sql` (storm notices), `004_plans_and_sensors.sql` (emergency plans),
+   `005_staff_roles.sql` (staff roles; without it only the bootstrap admin can sign in) and
+   `006_backup_low_warning.sql` (the "backup almost out" stage) the same way, in order.
 3. **Authentication → Sign In / Providers**: turn off "Allow new users to sign up", so only
    accounts you create can sign in.
-4. **Authentication → Users → Add user**: create one email + password per staff member.
+4. Set `LIFELINE_BOOTSTRAP_ADMIN=<your email>` in `server/.env` and create that one user under
+   **Authentication → Users → Add user**. Everyone else is added from the platform's **Staff** page,
+   which creates the account with a temporary password and a role. A Supabase user without a
+   Lifeline role gets no access.
 5. **Project Settings → API Keys**: copy the project URL and the **secret** key (`sb_secret_...`,
    or the legacy `service_role` key) into `server/.env`:
 
@@ -80,12 +92,12 @@ The secret key stays on the server. The browser only ever gets an opaque session
 | Part | Notes |
 |---|---|
 | ESP32 dev board | any; firmware tested to compile for `esp32:esp32:esp32` |
-| Battery for the ESP32 | power bank with **pass-through charging**, or 18650 + TP4056 with load sharing |
+| Battery for the ESP32 | power bank with **pass-through charging**, or 18650 + TP4056 with load sharing + 5 V boost converter |
 | Wall-sense adapter | any cheap 5 V USB phone charger, on the *same power strip as the "medical device"* |
 | Resistors | 10 kΩ + 20 kΩ (sense divider); 100 kΩ + 100 kΩ (optional battery divider) |
 | Lamp | stands in for the oxygen concentrator on stage |
 
-Wiring (no mains wiring; everything is low voltage):
+Full schematic: [`hardware/schematic.svg`](hardware/schematic.svg). Wiring (no mains wiring; everything is low voltage):
 
 ```
 sense adapter 5V ──10k──┬── GPIO34          (≈3.3 V when the wall has power, 0 V when it doesn't)
@@ -113,9 +125,49 @@ arduino-cli upload  --fqbn esp32:esp32:esp32 -p /dev/cu.usbserial-XXXX .
 arduino-cli monitor -p /dev/cu.usbserial-XXXX -c baudrate=115200
 ```
 
-The unit debounces 2 s of flicker, reports immediately on every change, retries every
-3 s until the server confirms, and sends a heartbeat every 30 s. The server marks a
-unit **offline** after 90 s of silence, which also catches a unit whose battery died.
+Firmware 0.4.0 talks HTTPS to a hosted server (certificate checked against the ESP32 core's
+root bundle; `http://` still works for a laptop server), joins the stronger of two saved Wi-Fi
+networks (e.g. home Wi-Fi plus a phone hotspot; WPA2-Enterprise such as eduroam via
+`WIFI_EAP_USERNAME`), debounces 2 s of flicker, reports immediately on every change, retries
+with backoff (3 s doubling to 30 s) until the server confirms, and sends a heartbeat every 30 s.
+Hold the button at power-on to open the setup portal and change the network or server address
+without reflashing (saved settings override `config.h`). The server marks a unit **offline**
+after 90 s of silence, which also catches a unit whose battery died.
+
+## Storm Watch (warnings before the power goes out)
+
+Every 5 minutes the server asks the National Weather Service (api.weather.gov: free, no key)
+about each patient's home: official warnings that threaten power lines (tornado, severe
+thunderstorm, high wind, ice storm, winter storm, hurricane, extreme cold or heat) and the
+next 24 hours of forecast wind gusts and ice. It also notices when 2+ other Lifeline homes
+within 3 miles lost power in the last 30 minutes.
+
+- High risk (warnings, gusts of 58 mph or more, a quarter inch of ice or more, outages
+  spreading nearby): the patient's first contact gets one notice per hazard, the board shows
+  an amber Storm watch banner, and the notice is kept in the History report.
+- Elevated risk (watches, advisories, gusts of 40 mph or more): shown on the board and the
+  family page only.
+
+On the live board the map shows NOAA's live weather radar, the outlines of active warnings
+and watches near the homes (in National Weather Service colours), and each home's current
+temperature; hover a home for wind, gusts and chance of thunder. Both layers can be switched
+off in the map's corner menu.
+
+Thresholds are heuristics from the outage research in `docs/research.md`, not a fitted model.
+Settings: `LIFELINE_STORM_WATCH=on|off|demo` (`demo` pretends an ice storm covers every home,
+for showing it on a clear day), `NWS_USER_AGENT` (NWS asks for an app name plus a contact),
+`LIFELINE_TIMEZONE` (default `America/Chicago`), `STORM_CHECK_SECONDS` (default 300).
+
+## Free phone push (ntfy)
+
+No account, no cost: alerts arrive as urgent push notifications with the full text and family link.
+
+1. Install the **ntfy** app (iOS/Android) and subscribe to your topic.
+2. In `server/.env`: `LIFELINE_NOTIFIER=ntfy` and `NTFY_TOPIC=lifeline-<long random string>`.
+   Anyone who knows the topic can read it, so the name is the secret (16+ characters enforced).
+
+Every alert goes to that one topic, titled with the contact it is for. Use Twilio for
+per-person SMS and calls in production.
 
 ## Real SMS and calls (Twilio)
 
@@ -133,6 +185,14 @@ python3 app.py
 
 Replies are checked against Twilio's signature, so `LIFELINE_PUBLIC_URL` must be the exact
 public base URL.
+
+**Free option: WhatsApp sandbox.** Twilio's free tier no longer includes a phone number, but
+its WhatsApp sandbox needs none. In the console open Messaging > Try it out > Send a WhatsApp
+message, send the shown `join <code>` from each demo phone, and set
+`TWILIO_FROM=whatsapp:+14155238886` (the sandbox sender shown there). Every alert, calls
+included, then arrives as a WhatsApp message. For replies, set the sandbox's "When a message
+comes in" URL to `https://<public-url>/api/sms-inbound`. Sandbox sessions expire after a few
+days of silence; send the join code again before the demo.
 Each alert says "Reply OK 4821" with a code unique to that outage. A bare "OK" works when
 only one open alert went to that phone; if the person is on several call lists with open
 outages (for example the agency's on-call nurse), Lifeline asks for the code instead of
@@ -151,7 +211,16 @@ machine itself. If VOXO's sandbox offers SMS/voice, add a `VoxoNotifier` with th
 | `PORT` | 8080 | HTTP port |
 | `ESCALATE_AFTER_SECONDS` | 120 | wait before alerting the next contact (use ~20 on stage) |
 | `OFFLINE_AFTER_SECONDS` | 90 | silence before a unit shows as offline |
-| `LIFELINE_NOTIFIER` | console | `console` or `twilio` |
+| `LIFELINE_NOTIFIER` | console | `console`, `ntfy` or `twilio` |
+| `LIFELINE_BOOTSTRAP_ADMIN` | (empty) | email that is always an admin (Supabase mode) |
+| `LIFELINE_SESSION_SECRET`, `LIFELINE_RESPOND_SECRET` | (random per start) | sign session cookies and one-tap "I'm responding" links; set them so restarts keep people signed in |
+| `LIFELINE_COUNTY_CONTACT` | (empty) | `Name\|+1601...\|sms`; county emergency management for the 15-minute emergency alert and welfare-check lists |
+| `LIFELINE_STORM_WATCH` | on | `on`, `off` or `demo` |
+| `LIFELINE_CLIENT_IP_HEADER` | (empty) | behind a proxy, e.g. `Fly-Client-IP`, so sign-in throttling counts callers, not the proxy |
+| `LIFELINE_DEMO_ASSUME_POWER` | (empty) | `1`: units that never reported show as powered (demo with one real unit) |
+
+Health check: `GET /healthz`. Hosting: see [`docs/ops/deploy.md`](docs/ops/deploy.md); smoke test with
+`python3 server/smoke_test.py <base-url>`.
 
 ## Code map
 
@@ -164,24 +233,19 @@ machine itself. If VOXO's sandbox offers SMS/voice, add a `VoxoNotifier` with th
 | `server/staff.py` | sessions and sign-in throttling |
 | `server/notifiers.py` | console and Twilio delivery, webhook signature check |
 | `server/app.py` | HTTP routes, security headers, composition root |
-| `server/static/` | platform, family page, sign-in (vanilla JS modules, `tokens.css` design tokens) |
+| `server/access.py` | roles, permissions and the staff directory |
+| `server/storm.py`, `server/weather.py` | Storm Watch rules and the National Weather Service adapter |
+| `server/static/` | landing page, platform, county page, family page, sign-in (vanilla JS modules, `tokens.css` design tokens) |
 
-## Stage demo (60 s)
+## Stage demo
 
-1. Live board on the projector: "All 4 homes have power". Lamp on, plugged into the power strip with the sense adapter.
-2. Switch the strip off. Lamp dies, the headline turns red ("1 home without power"), and a judge's phone gets the text with the family link.
-3. The judge opens the link: "Power is out", backup minutes counting down.
-4. Nobody responds, so after 20 s the "nurse" phone rings with the spoken alert.
-5. The judge taps "I'm responding". The board turns amber and escalation stops.
-6. Switch the strip back on. "Power is back on" texts arrive and everything goes green.
-
-Keep a screen recording of a good run as a backup.
+The stage plan, timed script and Q&A live in `docs/pitch/` (demo-day plan in `docs/pitch/demo-day/`,
+runbook in `docs/ops/demo-day.md`). Keep a recording of a good run as a backup; the recorder in
+`docs/pitch/video/record/` rebuilds the demo video against a synthetic local server.
 
 ## Not built yet (and when to add it)
 
-- **LTE-M**: needed for real outages because home WiFi dies too. Swap the WiFi transport for a SIM7080G/Walter board.
-- **Outage history**: live outage state is in memory, so a restart forgets an outage in progress (the next unit report re-opens it). Add an `outages` table when agencies want reports.
-- **Staff sessions** are in memory; staff sign in again after a restart.
-- **Roles**: every staff account can edit every patient. Add roles if an agency needs read-only staff.
+- **LTE-M**: needed for real outages because home Wi-Fi dies too. Swap the Wi-Fi transport for a SIM7080G/Walter board.
 - **Real patient data**: needs a HIPAA-eligible plan and a BAA with each vendor (Supabase, Twilio) first. Use synthetic data until then.
-- **Device current sensing**: shows whether the concentrator itself is drawing power. Skipped because it means touching mains wiring.
+- **Machine-running check**: the firmware and server support a clip-on current sensor (SCT-013 on GPIO32) that shows whether the concentrator itself is drawing power; the clamp is not fitted on the demo unit yet.
+- **Staff display names**: claimed rows show the email's name part ("nurse.reed"), not a full name.
