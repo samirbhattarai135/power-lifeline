@@ -36,6 +36,12 @@
 
 #define STATUS_LED_PIN 2
 
+// Optional 128x64 I2C OLED status screen (SSD1306, 4 pins: VCC to 3V3, GND, SCL, SDA).
+// ESP32 default I2C pins: SDA 21, SCL 22. -1 = not fitted. Address is usually 0x3C (some 0x3D).
+#define OLED_SDA_PIN 21
+#define OLED_SCL_PIN 22
+// #define OLED_ADDRESS 0x3C
+
 // ---- optional parts: set the GPIO you wired, or -1 if not fitted ----------------------------
 
 // Active buzzer (+ to this pin, - to GND): beeps when the power goes out until someone presses the button.

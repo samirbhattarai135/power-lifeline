@@ -21,6 +21,11 @@
 #include <WebServer.h>
 #include <DNSServer.h>
 #include "config.h"
+#if OLED_SDA_PIN >= 0
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#endif
 
 // ---- defaults for settings older config.h files don't have ------------------------------
 #ifndef WIFI_SSID
@@ -37,6 +42,15 @@
 #endif
 #ifndef WIFI_PASSWORD_2
 #define WIFI_PASSWORD_2 ""
+#endif
+#ifndef OLED_SDA_PIN
+#define OLED_SDA_PIN -1        // 128x64 I2C OLED status screen (SSD1306); -1 = not fitted
+#endif
+#ifndef OLED_SCL_PIN
+#define OLED_SCL_PIN -1
+#endif
+#ifndef OLED_ADDRESS
+#define OLED_ADDRESS 0x3C      // most 4-pin modules; some are 0x3D
 #endif
 #ifndef BUZZER_PIN
 #define BUZZER_PIN -1
@@ -72,7 +86,7 @@ DHT thermometer(TEMP_SENSOR_PIN, TEMP_SENSOR_TYPE);
 #endif
 #endif
 
-const char *FIRMWARE_VERSION = "0.5.0";
+const char *FIRMWARE_VERSION = "0.6.0";
 
 const uint32_t DEBOUNCE_MS       = 2000;   // ignore brownout flicker shorter than this
 const uint32_t HEARTBEAT_MS      = 30000;  // server marks a unit offline after ~90 s of silence
@@ -129,6 +143,9 @@ bool changePending     = true;   // server has not yet confirmed the current sta
 bool sendNow           = true;   // report on boot and right after every state change
 const char *pendingEvent = nullptr;  // "ack" or "help", sent with the next report until confirmed
 
+int lastHttpStatus = 0;          // last answer from the server, for the status screen
+uint32_t lastReportOkAt = 0;     // 0 = never confirmed
+uint32_t powerLostAt = 0;        // when the current outage was detected
 bool alarmSilenced = false;      // someone pressed the button during this outage
 uint32_t lastAlarmAt = 0;
 uint32_t buttonDownAt = 0;
@@ -358,8 +375,86 @@ bool sendReport(bool wallPower) {
   // Negative status = no answer (-1 connect/TLS failed, -11 timeout). 301/308 = an http:// URL to an https-only host.
   Serial.printf("report wall_power=%d amps=%.2f temp=%.1f event=%s -> HTTP %d\n", wallPower, amps, tempF,
                 pendingEvent ? pendingEvent : "-", status);
-  if (status == 200) pendingEvent = nullptr;
+  lastHttpStatus = status;
+  if (status == 200) {
+    pendingEvent = nullptr;
+    lastReportOkAt = millis();
+  }
   return status == 200;
+}
+
+// ---- status screen (optional 128x64 I2C OLED) ----------------------------------------------------
+// Shows at a glance: wall power, how long it has been out, Wi-Fi, and whether the server confirmed the
+// last report. The whole screen inverts during an outage so it reads from across the room.
+
+#if OLED_SDA_PIN >= 0
+Adafruit_SSD1306 oled(128, 64, &Wire, -1);
+bool oledReady = false;
+#endif
+
+void setupDisplay() {
+#if OLED_SDA_PIN >= 0
+  Wire.begin(OLED_SDA_PIN, OLED_SCL_PIN);
+  oledReady = oled.begin(SSD1306_SWITCHCAPVCC, OLED_ADDRESS);
+  if (!oledReady) {
+    Serial.printf("OLED: no display at 0x%02X on SDA %d / SCL %d\n", OLED_ADDRESS, OLED_SDA_PIN, OLED_SCL_PIN);
+    return;
+  }
+  oled.setTextColor(SSD1306_WHITE);
+  oled.clearDisplay();
+  oled.setTextSize(2);
+  oled.setCursor(0, 16);
+  oled.print("Lifeline");
+  oled.setTextSize(1);
+  oled.setCursor(0, 40);
+  oled.printf("v%s starting", FIRMWARE_VERSION);
+  oled.display();
+#endif
+}
+
+String elapsedText(uint32_t ms) {
+  uint32_t s = ms / 1000;
+  char text[16];
+  if (s >= 3600) snprintf(text, sizeof text, "%luh %02lum", (unsigned long)(s / 3600), (unsigned long)(s % 3600 / 60));
+  else snprintf(text, sizeof text, "%lu:%02lu", (unsigned long)(s / 60), (unsigned long)(s % 60));
+  return String(text);
+}
+
+void updateDisplay(uint32_t now) {
+#if OLED_SDA_PIN >= 0
+  static uint32_t lastDrawAt = 0;
+  if (!oledReady || now - lastDrawAt < 500) return;
+  lastDrawAt = now;
+  bool online = WiFi.status() == WL_CONNECTED;
+  oled.clearDisplay();
+  oled.setTextSize(1);
+  oled.setCursor(0, 0);
+  oled.print("Lifeline");
+  oled.setCursor(56, 0);
+  if (online) oled.printf("WiFi %ddBm", (int)WiFi.RSSI());
+  else oled.print("No WiFi");
+
+  oled.setTextSize(2);
+  oled.setCursor(0, 14);
+  oled.print(stableWallPower ? "POWER ON" : "POWER OUT");
+
+  oled.setTextSize(1);
+  oled.setCursor(0, 34);
+  if (!stableWallPower) oled.printf("Out for %s", elapsedText(now - powerLostAt).c_str());
+  else oled.print(online ? WiFi.SSID().substring(0, 21).c_str() : "Connecting...");
+
+  oled.setCursor(0, 46);
+  if (lastReportOkAt != 0 && lastHttpStatus == 200) oled.printf("Server OK %s ago", elapsedText(now - lastReportOkAt).c_str());
+  else if (lastHttpStatus != 0) oled.printf("Server retrying (%d)", lastHttpStatus);
+  else oled.print("Server: waiting");
+
+  oled.setCursor(0, 56);
+  if (!stableWallPower && alarmSilenced) oled.print("Button pressed: here");
+  else if (!stableWallPower) oled.print("Alerting call list");
+  else oled.printf("Unit %s", settings.deviceId.c_str());
+  oled.invertDisplay(!stableWallPower);  // the whole screen flips during an outage
+  oled.display();
+#endif
 }
 
 // ---- setup screen (Wi-Fi access point + one web form) ------------------------------------------
@@ -455,6 +550,7 @@ bool buttonHeldAtPowerOn() {
 
 void setup() {
   Serial.begin(115200);
+  setupDisplay();
   pinMode(WALL_SENSE_PIN, INPUT);  // divider's lower resistor pulls it low when the adapter is dead
   pinMode(STATUS_LED_PIN, OUTPUT);
   if (BUZZER_PIN >= 0) pinMode(BUZZER_PIN, OUTPUT);
@@ -499,6 +595,7 @@ void loop() {
     changePending = true;
     sendNow = true;
     alarmSilenced = false;
+    if (!stableWallPower) powerLostAt = now;
     Serial.printf("wall power %s\n", stableWallPower ? "RESTORED" : "LOST");
     if (!stableWallPower) {
       beep(3, 150);
@@ -506,6 +603,7 @@ void loop() {
     }
   }
   updateAlarm(now);
+  updateDisplay(now);
 
   digitalWrite(STATUS_LED_PIN, stableWallPower ? LOW : HIGH);
 
