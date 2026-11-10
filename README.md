@@ -17,14 +17,22 @@
 
 ## The problem
 
-Thousands of people live on a wall socket. An oxygen concentrator, a home ventilator or a dialysis
+Millions of people live on a wall socket. An oxygen concentrator, a home ventilator or a dialysis
 machine stops the moment the power does, and with no power and no battery the machine's own alarm
 doesn't sound. Nobody outside the house is told. Utilities can't promise when power comes back, and
 outage maps show dark neighbourhoods, not patients.
 
-In Forrest and Lamar counties, Mississippi, 1,897 people on Medicare depend on powered medical
-equipment at home, and 43,011 across the state (HHS emPOWER, October 2026). In January 2026, Winter
-Storm Fern cut power to more than 180,000 Mississippi homes and businesses.
+Across the United States, 3,115,917 people on Medicare rely on electricity-dependent medical
+equipment at home, and 380,319 of them also get home health care
+([HHS emPOWER REST Service](https://empowerprogram.hhs.gov/empower-rest.html), November 2026 data,
+state and territory counts summed). That count covers Medicare fee-for-service and Medicare
+Advantage only, so people on Medicaid alone or private insurance are not in it.
+
+Outages are getting longer. In 2024 U.S. electricity customers averaged 11 hours without power,
+nearly twice the yearly average of the decade before, and major events such as hurricanes caused
+80% of those hours
+([U.S. Energy Information Administration](https://www.eia.gov/todayinenergy/detail.php?id=66744),
+December 2025).
 
 ## What Lifeline does
 
@@ -228,7 +236,7 @@ security headers and that forged SMS replies are refused.
 
 ## Status
 
-Built at the USM VOXO Hatchathon 2026 in Hattiesburg, Mississippi, by Samir Bhattarai (hardware and
+Built by Samir Bhattarai (hardware and
 software) and Aadarsha Kunwar (research and agency outreach). It is a working prototype, not a
 certified medical product. Next: cellular connectivity so a unit works when home Wi-Fi goes down
 too, and a pilot with a home health agency.

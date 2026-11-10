@@ -107,7 +107,7 @@ section > * { max-width: var(--wide); margin-inline: auto; }
 .evidence { display: grid; gap: 40px; padding-block: 48px; border-top: 1px solid var(--night-line); }
 .evidence > * { width: 100%; }
 .scale-row { display: grid; gap: 14px; }
-.big-number { font: 800 112px/0.9 var(--font-display); letter-spacing: -0.041em; color: var(--window); font-variant-numeric: tabular-nums; }
+.big-number { font: 800 min(112px, 19vw)/0.9 var(--font-display); letter-spacing: -0.041em; color: var(--window); font-variant-numeric: tabular-nums; }
 .scale-number { display: grid; gap: 8px; }
 .source { font-size: 13px; line-height: 1.5; color: var(--on-night-faint); }
 .scale-copy { display: grid; gap: 14px; }
@@ -125,10 +125,10 @@ section > * { max-width: var(--wide); margin-inline: auto; }
 
 @media (min-width: 900px) {
   .evidence { gap: 64px; padding-block: 120px; }
-  .scale-row { grid-template-columns: auto minmax(0, 1fr); gap: 72px; align-items: center; }
-  .big-number { font-size: clamp(150px, 15.3vw, 220px); }
+  .scale-row { gap: 32px; }
+  .big-number { font-size: clamp(120px, 12vw, 180px); }
   .scale-number .source { font-size: 14px; }
-  .scale-copy { gap: 20px; }
+  .scale-copy { gap: 20px; max-width: 56rem; }
   .scale-copy h2 { font-size: 40px; line-height: 1.1; letter-spacing: -0.025em; }
   .scale-copy .body { font-size: 19px; }
   .scale-copy .source { font-size: 14px; }

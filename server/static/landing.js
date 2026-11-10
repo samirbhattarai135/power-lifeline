@@ -124,7 +124,7 @@ function heroParallax(gsap) {
 function countUp(gsap) {
   const node = document.getElementById("count");
   if (!notYetSeen(node)) return undefined;
-  const target = 1897;
+  const target = Number(node.textContent.replace(/,/g, ""));
   node.style.display = "inline-block";
   node.style.minWidth = `${node.getBoundingClientRect().width}px`;  // no layout shift while it counts
   const counter = { value: 0 };
