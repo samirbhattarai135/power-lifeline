@@ -236,9 +236,7 @@ security headers and that forged SMS replies are refused.
 
 ## Status
 
-Built by Samir Bhattarai (hardware and
-software) and Aadarsha Kunwar (research and agency outreach). It is a working prototype, not a
-certified medical product. Next: cellular connectivity so a unit works when home Wi-Fi goes down
+Lifeline is a working prototype, not a certified medical product. Next: cellular connectivity so a unit works when home Wi-Fi goes down
 too, and a pilot with a home health agency.
 
 ## License

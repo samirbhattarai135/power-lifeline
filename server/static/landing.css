@@ -134,7 +134,7 @@ section > * { max-width: var(--wide); margin-inline: auto; }
   .scale-copy .source { font-size: 14px; }
   .device-quote { grid-template-columns: 28px 1fr; column-gap: 24px; align-items: center; padding: 28px 32px; font-size: 19px; }
   .device-quote .icon { width: 28px; height: 28px; }
-  .trust { grid-template-columns: repeat(3, 1fr); gap: 48px; }
+  .trust { grid-template-columns: repeat(2, 1fr); gap: 48px; }
 }
 
 /* ---- how it works: the escalation timeline ------------------------------------------------------ */
