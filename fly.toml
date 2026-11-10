@@ -1,4 +1,4 @@
-# Fly.io config for the Lifeline server. Runbook: docs/ops/deploy.md
+# Fly.io config for the Lifeline server (alternative host; see README, Deploy).
 #
 # Lifeline keeps live outage timers in memory and escalates from a background ticker, so it must be
 # EXACTLY ONE always-on machine: never let it stop, never run two (two tickers = every alert twice).

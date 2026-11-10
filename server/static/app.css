@@ -1005,7 +1005,7 @@ dialog.panel { width: min(46rem, 100vw); background: var(--color-paper); }
 .signin-intro .signin-brand { color: #EEF3F1; font-size: 1.375rem; }
 .signin-copy { display: grid; gap: 1rem; }
 
-/* The Lifeline mark (docs/design/logo): sized by height, never red. Red means a patient is in danger; the logo is not an alert. */
+/* The Lifeline mark: sized by height, never red. Red means a patient is in danger; the logo is not an alert. */
 .wordmark, .family-brand, .signin-brand { gap: 0.3em; }
 .wordmark svg.brand-mark, .family-brand svg.brand-mark, .account .family-brand svg.brand-mark { height: 1.25rem; width: auto; flex: none; color: var(--color-ink); }
 .signin-brand svg.brand-mark { height: 1.375rem; width: auto; color: #EEF3F1; }

@@ -1,4 +1,4 @@
-# Lifeline server on the Azure VM. Installed by deploy/vm/setup.sh; runbook: docs/ops/deploy.md.
+# Lifeline server on the Azure VM. Installed by deploy/vm/setup.sh.
 # Exactly one of these may run against the Supabase project (two would send every alert twice).
 [Unit]
 Description=Lifeline power-loss alerts

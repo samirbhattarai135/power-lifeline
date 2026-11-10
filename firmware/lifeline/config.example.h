@@ -18,7 +18,7 @@
 // Laptop on the same Wi-Fi/hotspot instead (plain HTTP, local fallback only):
 // #define SERVER_URL  "http://192.168.1.50:8080/api/report"
 // Use https:// for the hosted server: it redirects http:// and the unit does not follow redirects.
-// A server address saved from the setup screen overrides this one (see docs/ops/demo-day.md).
+// A server address saved from the setup screen overrides this one.
 
 // Must match device_id / device_token in server/patients.json.
 #define DEVICE_ID      "unit-01"

@@ -8,7 +8,7 @@ public API like real units and staff would, so it needs no server changes.
   python3 server/storm_drill.py https://<storm host> calm  --admin you@example.org
 
 Refuses to touch a server whose roster has any home not created by this script, so it can never
-put fake outages on the real board. Runbook: docs/ops/deploy.md, "Storm demo board".
+put fake outages on the real board.
 """
 
 from __future__ import annotations

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Azure App Service startup command: "sh startup.sh" (docs/ops/deploy.md).
+# Azure App Service startup command: "sh startup.sh".
 # If app.py exits (say Supabase was unreachable for the whole startup retry window), App Service does
 # not restart it: it falls back to its own placeholder site and only replaces the instance after an
 # hour of failed health checks. So restart it here, and pass a stop signal on so saves can finish.

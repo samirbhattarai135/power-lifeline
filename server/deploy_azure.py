@@ -13,7 +13,7 @@
          az webapp config appsettings set ... --settings @dist/azure-settings.json -o none
          (-o none matters: without it the CLI prints every value), then delete the file.
 
-Runbook: docs/ops/deploy.md.
+See README, Deploy.
 """
 
 from __future__ import annotations
@@ -42,7 +42,7 @@ SETTINGS = {
     "OFFLINE_AFTER_SECONDS": "90",
     "SILENT_ALERT_AFTER_SECONDS": "300",
 }
-# docs/pitch/demo-script.md. Assume-power lets the one real unit run among synthetic homes that never report.
+# a live demo. Assume-power lets the one real unit run among synthetic homes that never report.
 STAGE_DEMO = {"ESCALATE_AFTER_SECONDS": "12", "LIFELINE_STORM_WATCH": "demo", "LIFELINE_DEMO_ASSUME_POWER": "1"}
 # The VM: Caddy on the same machine proxies 443 to 8080 and overwrites X-Real-IP with the caller's address.
 # Caddy on the same VM overwrites X-Real-IP; loopback-only bind means only Caddy can set it.
