@@ -232,3 +232,7 @@ Built at the USM VOXO Hatchathon 2026 in Hattiesburg, Mississippi, by Samir Bhat
 software) and Aadarsha Kunwar (research and agency outreach). It is a working prototype, not a
 certified medical product. Next: cellular connectivity so a unit works when home Wi-Fi goes down
 too, and a pilot with a home health agency.
+
+## License
+
+[MIT](LICENSE). Lifeline is not a medical device and comes with no warranty; see the license.
